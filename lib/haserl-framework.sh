@@ -80,6 +80,7 @@ redirect() {
   printf '%s\r\n' "Status: $status"
   printf '%s\r\n' "Location: $location"
   printf '%s\r\n'
+	export redirected="$location"
 }
 
 # This is main render, called from the app or controller.
@@ -314,10 +315,12 @@ run() {
       eval "local method=\$action_method_$i"
       #export RUN_LOOP_$i="i:$i, action_match_$i:$match, PATH_INFO:$PATH_INFO, action_code_$i: $code"
       if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
-        run_before >&2
+        run_before
         #echo "Test-error from just before (eval 'code') within run() function." >&2
-        eval "$code" #2>>haserl_framework.log
-        printf '\r\n'
+				if [ -z "$redirected" ]; then
+	        eval "$code" #2>>haserl_framework.log
+	        printf '\r\n'
+				fi
         run_after >&2
         return 0
       fi
