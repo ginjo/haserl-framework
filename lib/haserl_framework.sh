@@ -1,27 +1,15 @@
 #!/bin/sh
 #
 # This is a set of shell script functions that allow one to build
-# a MVC-style web framework based on cgi, shell scripts, and haserl templating.
+# MVC-style web frameworks based on cgi, shell scripts, and haserl templating.
 #
 # Dependencies:
 #   haserl
 #   gpg (gnupg)
 #   base64 (coreutils-base64)
-#
-# Create a project directory containing an 'app.cgi' file with the following contents:
-#
-# source <this-script-file>
-# setup
-# route '/matching/route' <optional-request-method-constraint> <<- !!
-#   render <view-file> <optional-layout-file>
-# !!
-# run
-#
-# See http://manpages.ubuntu.com/manpages/bionic/man1/haserl.1.html
-#
-# Ash can't export functions, but some other shells can.
-# If you're using a shell that can export functions,
-# you don't need to source the helpers in your views.
+
+
+# Exports all variable definitions during initial setup.
 set -a
 
 
