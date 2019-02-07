@@ -99,7 +99,7 @@ Finally, symlink the haserl-framework proxy.cgi file to your cgi directory
 set the executable bit of this file, if it is not already.
 
 ```shell
-  ln -s /usr/local/haserl-framework/proxy.cgi /var/www/cgi-bin/
+  ln -s /usr/local/haserl-framework/lib/proxy.cgi /var/www/cgi-bin/
 ```
 
 Or create your own .cgi file and insert the following code:
