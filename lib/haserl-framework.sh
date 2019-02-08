@@ -5,8 +5,10 @@
 #
 # Dependencies:
 #   haserl
-#   gpg (gnupg)
-#   base64 (coreutils-base64)
+#   gpg (ex: gnupg)
+#   base64 (ex: coreutils-base64)
+#
+# base64 and gpg are only necessary if using cookies.
 
 
 # Exports all variable definitions during initial setup.
@@ -31,7 +33,8 @@ SECRET="${SECRET:=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 128)}"
 before() {
   local code="$(cat -)"
   # Note that command-substitution $() strips ending newlines,
-  # thus the EEOOLL and the subsequent brace-expansion to remove EEOOLL.
+  # thus the EEOOLL and the subsequent brace-expansion to remove EEOOLL,
+	# yet keep the new lines.
   run_before=$(printf '%s%s\n\nEEOOLL' "$run_before" "$code")
   run_before="${run_before%EEOOLL}"
   #printf 'BEFORE() called:%s' "$run_before" >&2
@@ -301,7 +304,13 @@ server() {
 #
 run() {
   { 
+		# Experimental rewrite PATH_INFO if '/'
+		if [ "$REQUEST_URI" = "$SCRIPT_NAME/" ]; then
+			export PATH_INFO='/'
+		fi
     # This is needed for when path-info is empty or '/'.
+		# PATH_INFO will be null even if request is '/' (at least in openwrt).
+		# The above PATH_INFO modification may make this following bit obsolete.
     local path_info="$PATH_INFO"
     if [ -z "$path_info" ]; then
       path_info='/'

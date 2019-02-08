@@ -21,6 +21,7 @@ minimal functionality but can be extended infinitely at the developer's discreti
 
 
 ## Dependencies
+
 * haserl
 * gpg
 * base64
@@ -102,16 +103,16 @@ set the executable bit of this file, if it is not already.
   ln -s /usr/local/haserl-framework/lib/proxy.cgi /var/www/cgi-bin/
 ```
 
-Or create your own .cgi file and insert the following code:
+Or create your own .cgi file and insert the following code, remembering
+to adjust the file paths and shebang line to suit your installation.
 
 ```haserl
   #!/usr/bin/haserl
   <% env > /tmp/haserl_framework_input && cat /tmp/haserl_framework_output %>
 ```
 
-Adjust the file paths and bang line to suit your installation.
-
 Start the server:
+
 ```shell
   sh app.sh
   
@@ -122,6 +123,7 @@ Start the server:
 
 Make a request in your browser.
 Adjust the URL to suit your http server and CGI implementation.
+
 ```
   http://localhost/cgi-bin/proxy.cgi/home
 ```
@@ -155,4 +157,6 @@ in your app.sh file _before_ sourcing haserl-framework.sh.
 ### Layouts...
 
 ### Helpers...
+
+### Security...
 
