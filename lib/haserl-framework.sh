@@ -274,22 +274,26 @@ server() {
   #echo "FIFO_OUTPUT: $FIFO_OUTPUT"
   echo "Use the following code in a cgi script file:
   #!/usr/bin/haserl
-  <% env > $FIFO_INPUT && cat $FIFO_OUTPUT %>"
+  <% export -p > '$FIFO_INPUT' && cat '$FIFO_OUTPUT' %>"
   
   while true; do
     # Gets input from fifo.
-    local input="$(get_safe_fifo_input)"
+    #local input="$(get_safe_fifo_input)"
     #echo "ENV-INPUT:"
     #echo "$input"
+		# The above bit may be obsolete, since we are now using 'export -p'.
     
     # Forks to a subshell to process the request, so env & global vars won't get clobbered.
     (
       set -a
-      eval "$input"
+      #eval "$input"  # see above.
+			eval "$(cat $FIFO_INPUT)"
       unset TERMCAP
       set +a
       printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI"
-      run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
+			# The tee allows you to stuff all page responses into a file.
+      #run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
+			run > "$FIFO_OUTPUT"
     )
   done
 }

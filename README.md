@@ -108,7 +108,7 @@ to adjust the file paths and shebang line to suit your installation.
 
 ```haserl
   #!/usr/bin/haserl
-  <% env > /tmp/haserl_framework_input && cat /tmp/haserl_framework_output %>
+  <% export -p > /tmp/haserl_framework_input && cat /tmp/haserl_framework_output %>
 ```
 
 Start the server:
