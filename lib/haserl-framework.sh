@@ -326,8 +326,8 @@ run() {
       eval "local match=\$action_match_$i"
       eval "local code=\$action_code_$i"
       eval "local method=\$action_method_$i"
-      #export RUN_LOOP_$i="i:$i, action_match_$i:$match, PATH_INFO:$PATH_INFO, action_code_$i: $code"
-      if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
+      #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
+		if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
         run_before
         #echo "Test-error from just before (eval 'code') within run() function." >&2
 				if [ -z "$redirected" ]; then
@@ -379,10 +379,51 @@ headers() {
 #   Escapes single-quotes first.
 #   Adds a quote after '=' to any line that doesn't begin with a space or tab.
 #   Adds a quote at end of any line that doesn't end with '\'.
+# This will not be needed if 'export -p' turns out to be reliable.
 get_safe_fifo_input() {
   cat $FIFO_INPUT | sed "s/'/'\\\''/g; /^[^ \t]/{s/=/='/}; /[^\\]$/{s/$/'/}"
 }
 
+match_url() {  # <url> <matcher>
+	echo "URL: $1, MATCHER: $2"
+	
+	# Replaces var labels in url with general regexes.
+	# This is used to see if the URL matches the route in general.
+	gate_builder='s|:[[:alnum:]_]\{1,99\}|.*|g'
+	echo "GATE_BUILDER: $gate_builder"
+	
+	# Builds pattern to match this label instance against URL.
+	local gate="$(echo $2 | sed -e $gate_builder )"
+	echo "GATE: $gate"
+	
+	# Matches URL against given route... or not.
+	if ! echo "$1" | grep -q "$gate"; then
+		return 1
+	fi
+
+	# Picks out labels from url.
+	labels="$(echo $2 | grep -o ':\w*')"
+	echo "$labels"
+	
+	for x in $labels; do
+		# Builds pattern_builder to extract pattern-matcher for this label instance.
+		local pattern_builder="s|$x|\\\([^/]*\\\)|;s|:[[:alnum:]_]\{1,99\}|[^/]*|g"
+		echo "PATTERN_BUILDER: $pattern_builder"
+		
+		# Builds pattern to match this label instance against URL.
+		local pattern="$(echo $2 | sed -e $pattern_builder )"
+		echo "PATTERN: $pattern"
+		
+		# Extracts this label's param from URL.
+		result="$(echo $1 | sed -e 's|'$pattern'|\1|g' )"
+		echo "RESULT: $result"
+		
+		# Assigns param value to var.
+		x="$(echo $x | tr -d ':')"
+		echo "EVAL: PARAM_${x}='${result}'"
+		eval "PARAM_${x}='${result}'"
+	done
+}
 
 ##### Load-time Functions #####
 
