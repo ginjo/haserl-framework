@@ -385,42 +385,44 @@ get_safe_fifo_input() {
 }
 
 match_url() {  # <url> <matcher>
-	echo "URL: $1, MATCHER: $2"
+	#echo "URL: $1, MATCHER: $2" >&2
 	
 	# Replaces var labels in url with general regexes.
 	# This is used to see if the URL matches the route in general.
-	gate_builder='s|:[[:alnum:]_]\{1,99\}|.*|g'
-	echo "GATE_BUILDER: $gate_builder"
+	gate_builder='s|:[[:alnum:]_]\{1,99\}|[^/]*|g'
+	#echo "GATE_BUILDER: $gate_builder" >&2
 	
 	# Builds pattern to match this label instance against URL.
 	local gate="$(echo $2 | sed -e $gate_builder )"
-	echo "GATE: $gate"
+	#echo "URL GATE: $gate" >&2
 	
 	# Matches URL against given route... or not.
-	if ! echo "$1" | grep -q "$gate"; then
+	if ! echo "$1" | grep -q "^$gate$"; then
 		return 1
+	else
+		echo "URL '$1' matched route '$2' with pattern '^$gate\$'" >&2
 	fi
 
 	# Picks out labels from url.
 	labels="$(echo $2 | grep -o ':\w*')"
-	echo "$labels"
+	#echo "$labels" >&2
 	
 	for x in $labels; do
 		# Builds pattern_builder to extract pattern-matcher for this label instance.
 		local pattern_builder="s|$x|\\\([^/]*\\\)|;s|:[[:alnum:]_]\{1,99\}|[^/]*|g"
-		echo "PATTERN_BUILDER: $pattern_builder"
+		#echo "PATTERN_BUILDER: $pattern_builder" >&2
 		
 		# Builds pattern to match this label instance against URL.
 		local pattern="$(echo $2 | sed -e $pattern_builder )"
-		echo "PATTERN: $pattern"
+		#echo "PATTERN: $pattern" >&2
 		
 		# Extracts this label's param from URL.
 		result="$(echo $1 | sed -e 's|'$pattern'|\1|g' )"
-		echo "RESULT: $result"
+		#echo "RESULT: $result" >&2
 		
 		# Assigns param value to var.
 		x="$(echo $x | tr -d ':')"
-		echo "EVAL: PARAM_${x}='${result}'"
+		echo "EVAL: PARAM_${x}='${result}'" >&2
 		eval "PARAM_${x}='${result}'"
 	done
 }
