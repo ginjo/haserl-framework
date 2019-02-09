@@ -399,8 +399,8 @@ match_url() {  # <url> <matcher>
 	# Matches URL against given route... or not.
 	if ! echo "$1" | grep -q "^$gate$"; then
 		return 1
-	else
-		echo "URL '$1' matched route '$2' with pattern '^$gate\$'" >&2
+	# else
+	# 	echo "URL '$1' matched route '$2' with pattern '^$gate\$'" >&2
 	fi
 
 	# Picks out labels from url.
@@ -412,18 +412,22 @@ match_url() {  # <url> <matcher>
 		local pattern_builder="s|$x|\\\([^/]*\\\)|;s|:[[:alnum:]_]\{1,99\}|[^/]*|g"
 		#echo "PATTERN_BUILDER: $pattern_builder" >&2
 		
-		# Builds pattern to match this label instance against URL.
-		local pattern="$(echo $2 | sed -e $pattern_builder )"
+		# Builds sed pattern to match this label instance against URL.
+		local pattern="s|$(echo $2 | sed -e $pattern_builder )|\\1|g"
 		#echo "PATTERN: $pattern" >&2
 		
 		# Extracts this label's param from URL.
-		result="$(echo $1 | sed -e 's|'$pattern'|\1|g' )"
+		result="$(echo $1 | sed -e $pattern)"
 		#echo "RESULT: $result" >&2
 		
 		# Assigns param value to var.
 		x="$(echo $x | tr -d ':')"
-		echo "EVAL: PARAM_${x}='${result}'" >&2
-		eval "PARAM_${x}='${result}'"
+		#echo "EVAL: PARAM_${x}=${result}" >&2
+		# NOTE: Very important to eval the $result var literally and
+		# not the expanded $result, or you will eval user input!
+		# That is why the single-quotes.
+		# Use this URL to test against malicious input: http://wndr3800/cgi-bin/proxy.cgi/order/"';$(ls);'bill/9|99;
+		eval "PARAM_${x}="'${result}'
 	done
 }
 
