@@ -384,6 +384,14 @@ get_safe_fifo_input() {
   cat $FIFO_INPUT | sed "s/'/'\\\''/g; /^[^ \t]/{s/=/='/}; /[^\\]$/{s/$/'/}"
 }
 
+# Matches PATH_INFO string with route definition,
+# creating variables from uri-inline-params if they exist.
+# Care is taken to prevent command injection.
+#   See https://www.owasp.org/index.php/Testing_for_Command_Injection_(OTG-INPVAL-013)
+# Test injection with this:
+#   bad='{ }  ( ) < > & * ? | = ? ; [ ]  $ ? # ~ ! . ? %  / \ : + , `'\''"'
+#   eval "x=\""'$bad'\"
+#   echo "$x"
 match_url() {  # <url> <matcher>
 	#echo "URL: $1, MATCHER: $2" >&2
 	
@@ -427,7 +435,8 @@ match_url() {  # <url> <matcher>
 		# not the expanded $result, or you will eval user input!
 		# That is why the single-quotes.
 		# Use this URL to test against malicious input: http://wndr3800/cgi-bin/proxy.cgi/order/"';$(ls);'bill/9|99;
-		eval "PARAM_${x}="'${result}'
+		#eval "PARAM_${x}="'${result}'
+		eval "PARAM_${x}=\""'${result}'\"
 	done
 }
 
