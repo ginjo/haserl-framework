@@ -1,4 +1,5 @@
 #!/usr/bin/haserl
+<%# env > /root/cgi_dump.sh %>
 <% export -p > /tmp/haserl_framework_input && cat /tmp/haserl_framework_output %>
 <%#
   # Use haserl to get param parsing, as above, or...

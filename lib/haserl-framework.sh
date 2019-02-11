@@ -9,7 +9,15 @@
 #   base64 (ex: coreutils-base64)
 #
 # base64 and gpg are only necessary if using cookies.
-
+#
+# NOTE: Care is taken to prevent command injection.
+# See https://www.owasp.org/index.php/Testing_for_Command_Injection_(OTG-INPVAL-013)
+# Test for vulnerabilities at all points of 'eval', especially where user-input is handled.
+# Test potential points of injection with these characters:
+#   bad='{ }  ( ) < > & * ? | = ? ; [ ]  $ ? # ~ ! . ? %  / \ : + , `'\''"'
+# This should not fail: eval "x=\""'$bad'\"; echo "$x"
+# This should not fail: http://host/cgi-bin/proxy.cgi/env?dir=%3Bcat%20/etc/passwd
+# This should not fail: http://host/cgi-bin/proxy.cgi/env?;%3Bcat%20/etc/passwd;=something
 
 # Exports all variable definitions during initial setup.
 set -a
@@ -287,7 +295,8 @@ server() {
     (
       set -a
       #eval "$input"  # see above.
-			eval "$(cat $FIFO_INPUT)"
+			# Evals env-export input from haserl-cgi script, skipping lines with non-valid var names.
+			eval "$(cat $FIFO_INPUT | sed -ne '/^export [[:alnum:]_]\+=/p')"
       unset TERMCAP
       set +a
       printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI"
@@ -386,12 +395,6 @@ get_safe_fifo_input() {
 
 # Matches PATH_INFO string with route definition,
 # creating variables from uri-inline-params if they exist.
-# Care is taken to prevent command injection.
-#   See https://www.owasp.org/index.php/Testing_for_Command_Injection_(OTG-INPVAL-013)
-# Test injection with this:
-#   bad='{ }  ( ) < > & * ? | = ? ; [ ]  $ ? # ~ ! . ? %  / \ : + , `'\''"'
-#   eval "x=\""'$bad'\"
-#   echo "$x"
 match_url() {  # <url> <matcher>
 	#echo "URL: $1, MATCHER: $2" >&2
 	
