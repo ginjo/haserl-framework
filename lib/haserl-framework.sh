@@ -299,10 +299,15 @@ server() {
 			eval "$(cat $FIFO_INPUT | sed -ne '/^export [[:alnum:]_]\+=/p')"
       unset TERMCAP
       set +a
-      printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI"
+      printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI" >&2
+			echo "Running process: $0" >&2
+			#echo "ENV:..." >&2
+			#env >&2
 			# The tee allows you to stuff all page responses into a file.
       #run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
 			run > "$FIFO_OUTPUT"
+			#run >&2 #| tee "$FIFO_INPUT" > /tmp/haserl_run_output.html
+			#echo "ABORT" > "$FIFO_INPUT"
     )
   done
 }
@@ -442,6 +447,37 @@ match_url() {  # <url> <matcher>
 		eval "PARAM_${x}=\""'${result}'\"
 	done
 }
+
+
+##### Experimentatl Socat Server #####
+
+prepare_run(){
+	env >&2
+  set -a
+	# Evals env-export input from haserl-cgi script, skipping lines with non-valid var names.	
+	while IFS= read -r -t1 line; do
+		#eval "$(printf '%s' $line | sed -ne '/^export [[:alnum:]_]\+=/p')"
+		line=$(printf '%s' "$line" | sed -ne '/^export [[:alnum:]_]\+=/p')
+		#echo "LINE: $line" >&2
+		eval "$line"
+	done
+  unset TERMCAP
+  set +a
+	printf '%s\n' "Running process: $0" >&2
+  printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI" >&2
+	# The tee allows you to stuff all page responses into a file.
+  #run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
+	#run > "$FIFO_OUTPUT"
+}
+
+server_socat() {
+	#socat -t0.5 tcp4-listen:1500,reuseaddr,fork,crlf system:". $framework && prepare_run && run | tee haserl_socat.log",nofork
+	server &
+	sleep 1
+	#socat -v -t0.5 tcp4-listen:1500,reuseaddr,fork PIPE:"$FIFO_INPUT"
+	eval "$(set| tr '\n' ' ') socat -t0.5 tcp-listen:1500,reuseaddr,fork PIPE:'$FIFO_INPUT'"
+}
+
 
 ##### Load-time Functions #####
 
