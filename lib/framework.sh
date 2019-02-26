@@ -440,7 +440,7 @@ if [ -z "$framework" ]; then
   #framework="$(readlink -f "$0")"
   # This gets the 2nd arg that was passed to the 'source' command in the app.
   # It's hacky, but it works just fine.
-  framework="${1:-$HF_DIRNAME/haserl-framework.sh}"
+  framework="${1:-$HF_DIRNAME/framework.sh}"
 fi
 
 set +a

@@ -7,7 +7,6 @@ export SOCAT_SERVER_PID="${SOCAT_SERVER_PID:=/tmp/socat_server.pid}"
 
 trap handle_trap 1 2 3 5 6 14 15
 
-
 # Handles cleanup when the application quits.
 handle_trap(){
 	echo "Running handle_trap $$" >&2
@@ -118,10 +117,12 @@ daemon_server() {
 # Note that if -t is too small, the pipe will break before 'system' call is finished.
 #
 socat_server(){
-	echo "Running socat_server $$ with ${1:-<undefined>} handler" >&2
-	#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
-	# TODO: Allow server startup command to pass socat options and 1st addr to this command.
-	socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}"
+	{
+		echo "Running socat_server $$ with ${1:-<undefined>} handler"
+		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
+		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
+		socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}"
+	} >&2
 }
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
@@ -142,8 +143,8 @@ handle_http(){
 			printf '%s\n' "$line"
 			while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
 				read line
-				printf '%s\n' "$line"
 				[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
+				printf '%s\n' "$line"
 			done
 			if [ $(($len)) > 0 ]; then
 				#echo "Calling 'head' on stdin with -c $len" >&2
@@ -205,6 +206,8 @@ handle_scgi() {
 		#echo "Done reading scgi input, closed stdin."
 	} >&2
 	
+	#echo "SCGI Headers: $scgi_headers" >&2
+	
 	# Outputs scgi env and local env to call_daemon_with_fifo.
 	{
 		printf '%s\n' "$scgi_headers"
@@ -265,7 +268,7 @@ start() {
 }
 
 stop() {
-	kill -15 -"$(cat /tmp/socat_server.pid)"
+	kill -15 -"$(cat $SOCAT_SERVER_PID)"
 }
 
 # Handles runtime/startup command processing
