@@ -61,13 +61,15 @@ daemon_server() {
 	
 	while [ $? -eq 0 ]; do
 		# Forks a subshell to keep each request environment separate.
+		local input_env="$(cat $FIFO_INPUT)"
+		
 		(	
 			# If there are ANY errors in this subshell, exit the subshell and go back to top of loop.
 			# At that point, the while-loop will stop and the daemon_server will return.
 			# Not sure if that's what we want, but this was created this way to prevent runaway while-loop.
 			#set -e
 			
-			eval_input_env "$(cat $FIFO_INPUT)"
+			eval_input_env "$input_env"
 			
 			# echo "Daemon evaled env, before haserl:" >&2
 			# export -p >&2
@@ -98,7 +100,7 @@ daemon_server() {
 				run
 				
 			} > "$FIFO_OUTPUT"
-		)
+		) &
 	done
 }
 
@@ -121,7 +123,8 @@ socat_server(){
 		echo "Running socat_server $$ with ${1:-<undefined>} handler"
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
-		socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}"
+		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
+		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_DIRNAME}/server.sh handle ${1:-scgi}"
 	} >&2
 }
 
@@ -271,6 +274,10 @@ stop() {
 	kill -15 -"$(cat $SOCAT_SERVER_PID)"
 }
 
+handle() {
+	handle_$1
+}
+
 # Handles runtime/startup command processing
 case $1 in
 	"start")
@@ -280,6 +287,10 @@ case $1 in
 	"stop")
 		shift
 		stop $*
+		;;
+	"handle")
+		shift
+		handle $1
 		;;
 esac
 
