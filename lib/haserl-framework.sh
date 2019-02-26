@@ -7,8 +7,11 @@
 #   haserl
 #   gpg (ex: gnupg)
 #   base64 (ex: coreutils-base64)
+#   socat
 #
-# base64 and gpg are only necessary if using cookies.
+# Base64 and gpg are only necessary if using cookies.
+# Socat is only required if using scgi or if serving this app
+# from a machine other than the web server's.
 #
 # NOTE: Care is taken to prevent command injection.
 # See https://www.owasp.org/index.php/Testing_for_Command_Injection_(OTG-INPVAL-013)
@@ -481,7 +484,7 @@ server_socat() {
 
 ##### Load-time Functions #####
 
-# Runs the setup function when after all other functions have loaded.
+# Runs the setup function after all other functions have loaded.
 setup
 
 # We need the framwork path so a helper can load the framework in views (which are a separate process).
@@ -491,7 +494,7 @@ if [ -z "$framework" ]; then
   #framework="$(readlink -f "$0")"
   # This gets the 2nd arg that was passed to the 'source' command in the app.
   # It's hacky, but it works just fine.
-  framework="$1"
+  framework="${1:-$HF_DIRNAME/haserl-framework.sh}"
 fi
 
 set +a
