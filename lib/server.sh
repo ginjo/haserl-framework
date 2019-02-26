@@ -7,6 +7,37 @@ export SOCAT_SERVER_PID="${SOCAT_SERVER_PID:=/tmp/socat_server.pid}"
 
 trap handle_trap 1 2 3 5 6 14 15
 
+
+# Handles cleanup when the application quits.
+handle_trap(){
+	echo "Running handle_trap $$" >&2
+	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output"
+	#kill -9 $sd
+	#kill -15 -$$
+	rm -f "$SOCAT_SERVER_PID"
+	printf '\n%s\n' "Goodbye!" >&2
+}
+
+# Runs the daemon and socat processes in paralell
+main_server() {
+	echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
+	# Spawn a subshell, otherwise we'll kill the main shell.
+	# TODO: Consider using start-stop-daemon.	
+	(
+		echo "$$" > "$SOCAT_SERVER_PID"
+		echo "Running main_server $$" >&2
+		# Note the 5th field in /proc/<pid>/stat is the pgid.
+	
+		# daemon_server &
+		# sd="$!"
+		# socat_server  #&
+		# #ss="$!"
+		# wait $sd #$ss
+		
+		daemon_server | socat_server $1
+	)
+}
+
 # Simple daemon paired with socat tcp interface.
 # Note that the fifo input and fifo output need to be two separate commands,
 # not piped (paralell processing), even if they use the same fifo,
@@ -56,14 +87,16 @@ daemon_server() {
 			#       CGI will create the http status line for you!
 			{
 				# Returns basic headers for cgi/haserl script.
-				printf '%s\r\n' "Status: 200"
-				printf '%s\r\n' "Content-Type: text/plain"
-			  printf '%s\r\n' "Date: $(date)"
-				printf '%s\r\n' "Frontend-Server: $HTTP_HOST"
-			  printf '%s\r\n' "Backend-Server: $SOCAT_SOCKADDR:$SOCAT_SOCKPORT"
-			  printf '%s\r\n' "Client: $SOCAT_PEERADDR:$SOCAT_PEERPORT"
-				printf '%s\r\n'
-				export -p
+				# printf '%s\r\n' "Status: 200"
+				# printf '%s\r\n' "Content-Type: text/plain"
+				# 			  printf '%s\r\n' "Date: $(date)"
+				# printf '%s\r\n' "Frontend-Server: $HTTP_HOST"
+				# 			  printf '%s\r\n' "Backend-Server: $SOCAT_SOCKADDR:$SOCAT_SOCKPORT"
+				# 			  printf '%s\r\n' "Client: $SOCAT_PEERADDR:$SOCAT_PEERPORT"
+				# printf '%s\r\n'
+				# export -p
+				
+				run
 				
 			} > "$FIFO_OUTPUT"
 		)
@@ -88,7 +121,7 @@ socat_server(){
 	echo "Running socat_server $$ with ${1:-<undefined>} handler" >&2
 	#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 	# TODO: Allow server startup command to pass socat options and 1st addr to this command.
-	socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_${1:-cgi}"
+	socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}"
 }
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
@@ -227,43 +260,23 @@ call_daemon_with_fifo() {
 	rm -f "$fifo_output" >&2
 }
 
-# Runs the daemon and socat processes in paralell
-main_server() {
-	# Spawn a subshell, otherwise we'll kill the main shell.
-	# TODO: Consider using start-stop-daemon.	
-	(
-		echo "$$" > "$SOCAT_SERVER_PID"
-		echo "Running main_server $$" >&2
-		# Note the 5th field in /proc/<pid>/stat is the pgid.
-	
-		# daemon_server &
-		# sd="$!"
-		# socat_server  #&
-		# #ss="$!"
-		# wait $sd #$ss
-		
-		daemon_server | socat_server $1
-	)
+start() {
+	main_server $*
 }
 
-# Handles cleanup when the application quits.
-handle_trap(){
-	echo "Running handle_trap $$" >&2
-	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output"
-	#kill -9 $sd
-	#kill -15 -$$
-	rm -f "$SOCAT_SERVER_PID"
-	printf '\n%s\n' "Goodbye!" >&2
+stop() {
+	kill -15 -"$(cat /tmp/socat_server.pid)"
 }
 
 # Handles runtime/startup command processing
 case $1 in
 	"start")
 		shift
-		main_server $*
+		start $*
 		;;
 	"stop")
-		kill -15 -"$(cat /tmp/socat_server.pid)"
+		shift
+		stop $*
 		;;
 esac
 

@@ -28,13 +28,6 @@ set -a
 
 ##### Environment Variables #####
 
-# Sets name of fifo files.
-FIFO_INPUT="${FIFO_INPUT:=/tmp/haserl_framework_input}"
-FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/haserl_framework_output}"
-
-# Cleans up fifo files when app is terminated.
-trap "rm -f $FIFO_INPUT; rm -f $FIFO_OUTPUT; exit" 1 2 3 6
-
 # Uses SECRET or sets it to random string.
 SECRET="${SECRET:=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 128)}"
 
@@ -266,58 +259,11 @@ setup() {
   is_setup=true
 }
 
-# Loads the framework into a background server process.
-# Waits for input - a string of ENV from the cgi via fifo input,
-# then evals the input in a subshell,
-# then calls run() and returns the result to the cgi via fifo output.
-#
-# NOTE: Here is a hacky netcat server loop that accepts headers & env,
-#   and sends them to the fifo input. This could work if the proxy_pass could send env (but I don't think they can).
-#   while true; do cat /tmp/haserl_framework_output | ncat -l 0.0.0.0 1500 | sed -E 's/^([a-zA-Z0-9\-]+)\: /\1\=/g' | tee /tmp/haserl_framework_input; done
-#
-server() {
-  rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-  mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
-  chmod 600 "$FIFO_INPUT" "$FIFO_OUTPUT"
-  
-  echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
-  #echo "FIFO_INPUT: $FIFO_INPUT"
-  #echo "FIFO_OUTPUT: $FIFO_OUTPUT"
-  echo "Use the following code in a cgi script file:
-  #!/usr/bin/haserl
-  <% export -p > '$FIFO_INPUT' && cat '$FIFO_OUTPUT' %>"
-  
-  while true; do
-    # Gets input from fifo.
-    #local input="$(get_safe_fifo_input)"
-    #echo "ENV-INPUT:"
-    #echo "$input"
-		# The above bit may be obsolete, since we are now using 'export -p'.
-    
-    # Forks to a subshell to process the request, so env & global vars won't get clobbered.
-    (
-      set -a
-      #eval "$input"  # see above.
-			# Evals env-export input from haserl-cgi script, skipping lines with non-valid var names.
-			eval "$(cat $FIFO_INPUT | sed -ne '/^export [[:alnum:]_]\+=/p')"
-      unset TERMCAP
-      set +a
-      printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI" >&2
-			echo "Running process: $0" >&2
-			#echo "ENV:..." >&2
-			#env >&2
-			# The tee allows you to stuff all page responses into a file.
-      #run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
-			run > "$FIFO_OUTPUT"
-			#run >&2 #| tee "$FIFO_INPUT" > /tmp/haserl_run_output.html
-			#echo "ABORT" > "$FIFO_INPUT"
-    )
-  done
-}
-
 # Runs the action after routes have been defined by user.
+# Expects request env vars to be populated already.
+#
 # NOTE:
-#   All stdout during the request 'run' will be sent to the fifo-output, and therefore back to the cgi.
+#   All stdout during the request 'run' should be sent to the fifo-output, and therefore back to the s/cgi.
 #   Use stderr during the request 'run' for all messages that should be sent back to server stdout or log.
 #
 # Expects no input from stdin or from args.

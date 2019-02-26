@@ -6,4 +6,7 @@
 
 export HF_DIRNAME=$(dirname "$0")
 echo "export HF_DIRNAME='$HF_DIRNAME';"
-echo ". $HF_DIRNAME/haserl-framework.sh"
+echo ". $HF_DIRNAME/framework.sh" >&2
+echo ". $HF_DIRNAME/server.sh" >&2
+echo ". $HF_DIRNAME/framework.sh;"
+echo ". $HF_DIRNAME/server.sh;"
