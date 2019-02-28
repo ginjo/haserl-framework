@@ -1,30 +1,39 @@
 #!/bin/sh
 
+. "$(pwd)/.env"
+
 export FIFO_INPUT="${FIFO_INPUT:=/tmp/fifo_input}"
 export FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/fifo_output}"
 export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
 export SOCAT_SERVER_PID="${SOCAT_SERVER_PID:=/tmp/socat_server.pid}"
+export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 
-trap handle_trap 1 2 3 5 6 14 15
+. "$HF_DIRNAME/logging.sh"
+
+# See this for signal listing - https://unix.stackexchange.com/questions/317492/list-of-kill-signals
+trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
 
 # Handles cleanup when the application quits.
 handle_trap(){
-	echo "Running handle_trap $$" >&2
+	log 4 "Running handle_trap $$"
 	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output"
 	#kill -9 $sd
 	#kill -15 -$$
+	#kill -15 -"$(cat $SOCAT_SERVER_PID)"
 	rm -f "$SOCAT_SERVER_PID"
 	printf '\n%s\n' "Goodbye!" >&2
+	kill -15 -$$
 }
 
 # Runs the daemon and socat processes in paralell
 main_server() {
-	echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
+	#echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
+	log 3 "Starting the Haserl Framework Server v0.0.1 with log-level ($LOG_LEVEL)"
 	# Spawn a subshell, otherwise we'll kill the main shell.
 	# TODO: Consider using start-stop-daemon.	
 	(
 		echo "$$" > "$SOCAT_SERVER_PID"
-		echo "Running main_server $$" >&2
+		log 4 'Running main_server'
 		# Note the 5th field in /proc/<pid>/stat is the pgid.
 	
 		# daemon_server &
@@ -57,13 +66,14 @@ daemon_server() {
 	chmod 600 "$FIFO_INPUT" "$FIFO_OUTPUT"
 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
 	
-	echo "Running daemon_server $$" >&2
+	log 4 'Starting daemon_server'
 	
 	while [ $? -eq 0 ]; do
 		# Forks a subshell to keep each request environment separate.
 		local input_env="$(cat $FIFO_INPUT)"
-		
+		log 5 "Begin daemon loop"
 		(	
+			
 			# If there are ANY errors in this subshell, exit the subshell and go back to top of loop.
 			# At that point, the while-loop will stop and the daemon_server will return.
 			# Not sure if that's what we want, but this was created this way to prevent runaway while-loop.
@@ -80,7 +90,7 @@ daemon_server() {
 			# echo "Daemon evaled env, after haserl:" >&2
 			# export -p >&2
 			
-			echo "$(date -Iseconds) $0 $REQUEST_METHOD $REQUEST_URI $$" >&2
+			log 3 "$REQUEST_METHOD $REQUEST_URI"
 			
 			# Outputs the response to the fifo-output (possibly specific to this subshell).
 			# The upstream caller should know how to find the correct FIFO_OUTPUT file.
@@ -100,6 +110,7 @@ daemon_server() {
 				run
 				
 			} > "$FIFO_OUTPUT"
+			log 5 "End daemon loop"
 		) &
 	done
 }
@@ -120,19 +131,19 @@ daemon_server() {
 #
 socat_server(){
 	{
-		echo "Running socat_server $$ with ${1:-<undefined>} handler"
+		echo "Running socat_server with handler (${1:-<undefined>})"
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
-		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_DIRNAME}/server.sh handle ${1:-scgi}"
-	} >&2
+		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_DIRNAME}/server.sh handle ${1:-scgi}" 2>&103
+	} >&104
 }
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
 # This accepts and handles http and non-http input containing env code
 #
 handle_http(){
-	echo "Running handle_http/handle_cgi $$" >&2
+	log 5 'Running handle_http/handle_cgi'
 	{
 		local line="x"
 		local len=0
@@ -161,6 +172,7 @@ handle_http(){
 		export -p
 		
 	} | call_daemon_with_fifo
+	log 5 "End handle_http/handle_cgi"
 }
 
 #alias handle_cgi='handle_http'
@@ -168,8 +180,8 @@ handle_cgi() { handle_http $*; }
 
 # Accepts and parses SCGI input, and sends it to call_daemon_with_fifo.
 handle_scgi() {
+	log 5 "Begin handle_scgi"
 	{
-		echo "Running handle_scgi $$"
 		local len=''
 		local chr=''
 		
@@ -185,7 +197,7 @@ handle_scgi() {
 		# This does not appear to be necessary at the moment.
 		#exec 0<&0
 		
-		echo "Reading $len characters of scgi input."
+		log 5 "Reading $len characters of scgi input."
 	
 		# Reads header length, reads headers, translates into env var code.
 		scgi_headers=$(
@@ -199,7 +211,7 @@ handle_scgi() {
 	
 		# Gets remaining stdin containing request body, if exists.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
-			echo "Reading $CONTENT_LENGTH more chars as request body."
+			log 5 "Reading $CONTENT_LENGTH more chars as request body."
 			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=1 2>/dev/null | tee -a scgi_input.txt)
 			#echo "Request body: $REQUEST_BODY"
 		fi
@@ -207,7 +219,7 @@ handle_scgi() {
 		# Closes stdin for reading (which also closes stdin for writing and clears stdin).
 		#exec 0<&-
 		#echo "Done reading scgi input, closed stdin."
-	} >&2
+	} 2>&1 >&103 #>&2
 	
 	#echo "SCGI Headers: $scgi_headers" >&2
 	
@@ -216,6 +228,8 @@ handle_scgi() {
 		printf '%s\n' "$scgi_headers"
 		export -p
 	} | call_daemon_with_fifo
+	
+	log 5 "End handle_scgi"
 }
 
 # Filters input for only single-quoted safely eval'able var definitions,
@@ -223,12 +237,12 @@ handle_scgi() {
 # Expects input as $1
 eval_input_env() {
 	{
-		evalable_input=$(evalable_env_from_input "$1") >&2
+		evalable_input=$(evalable_env_from_input "$1")
 		set -a
-		eval "$evalable_input" >&2
+		eval "$evalable_input"
 		set +a
 		# { echo "Evald env:"; export -p; }
-	} >&2
+	} 2>&1 >&103 #>&2
 }
 
 # Returns evalable env code from stdin.
@@ -240,7 +254,7 @@ evalable_env_from_input() {
 # Evals env returned from simple haserl call.
 eval_haserl_env() {
 	{
-		echo "Evaling env with haserl." >&2
+		log 5 "Evaling env with haserl."
 		#echo "Sending REQUEST_BODY to haserl:" >&2
 		#echo "$REQUEST_BODY" >&2
 		haserl_env=$(printf '%s' "$REQUEST_BODY" | haserl "$HASERL_ENV")
@@ -267,7 +281,7 @@ call_daemon_with_fifo() {
 }
 
 start() {
-	main_server $*
+	main_server $1
 }
 
 stop() {
@@ -281,16 +295,13 @@ handle() {
 # Handles runtime/startup command processing
 case $1 in
 	"start")
-		shift
-		start $*
+		start $2
 		;;
 	"stop")
-		shift
-		stop $*
+		stop $2
 		;;
 	"handle")
-		shift
-		handle $1
+		handle $2
 		;;
 esac
 

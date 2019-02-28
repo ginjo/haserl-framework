@@ -22,15 +22,17 @@
 # This should not fail: http://host/cgi-bin/proxy.cgi/env?dir=%3Bcat%20/etc/passwd
 # This should not fail: http://host/cgi-bin/proxy.cgi/env?;%3Bcat%20/etc/passwd;=something
 
-# Exports all variable definitions during initial setup.
-set -a
-
-
-##### Environment Variables #####
+. "$(pwd)/.env"
 
 # Uses SECRET or sets it to random string.
-SECRET="${SECRET:=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 128)}"
+export SECRET="${SECRET:=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 128)}"
+export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 
+. "$HF_DIRNAME/logging.sh"
+
+
+# Exports all variable definitions during initial setup.
+set -a
 
 ##### User Functions #####
 
