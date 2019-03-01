@@ -6,8 +6,11 @@ export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
 export SOCAT_SERVER_PID="${SOCAT_SERVER_PID:=/tmp/socat_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
+export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr,fork}"
 
 . "$HF_DIRNAME/logging.sh"
+
+#export -p >&2 # TEMP DEBUGGING
 
 # See this for signal listing - https://unix.stackexchange.com/questions/317492/list-of-kill-signals
 trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
@@ -22,27 +25,6 @@ handle_trap(){
 	rm -f "$SOCAT_SERVER_PID"
 	printf '\n%s\n' "Goodbye!" >&2
 	kill -15 -$$
-}
-
-# Runs the daemon and socat processes in paralell
-main_server() {
-	#echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
-	log 3 "Starting the Haserl Framework Server v0.0.1 with log-level ($LOG_LEVEL)"
-	# Spawn a subshell, otherwise we'll kill the main shell.
-	# TODO: Consider using start-stop-daemon.	
-	(
-		echo "$$" > "$SOCAT_SERVER_PID"
-		log 4 'Running main_server'
-		# Note the 5th field in /proc/<pid>/stat is the pgid.
-	
-		# daemon_server &
-		# sd="$!"
-		# socat_server  #&
-		# #ss="$!"
-		# wait $sd #$ss
-		
-		daemon_server | socat_server $1
-	)
 }
 
 # Simple daemon paired with socat tcp interface.
@@ -130,29 +112,60 @@ daemon_server() {
 #
 socat_server(){
 	{
-		echo "Running socat_server with handler (${1:-<undefined>})"
+		#echo "Starting socat_server with handler (${1:-<undefined>})" >&2
+		log 4 "Starting socat_server with HF_LISTENER '$HF_LISTENER'"
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
-		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}" 2>&103
-	} >&104
+		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
+		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
+	} >&103
+}
+
+# Handles request from socat server.
+handle_request() {
+	log 5 "Running handle_request"
+	local line=''
+	local chr=''
+	while :; do  #[ "$?" == "0" ]; do
+		#chr=$(dd count=1 bs=1 2>/dev/null)
+		IFS= read -rn1 chr
+		line="$line$chr"
+		log 6 "Choosing handler for request beginning with: $line"
+		if printf '%s' "$line" | grep -qE '^[0-9]+:'; then
+			log 5 "Calling handle_scgi with $line"
+			handle_scgi "$line"
+			break
+		elif printf '%s' "$line" | grep -qE '^(export )?[[:alnum:]_]+='; then
+			log 5 "Calling handle_cgi with $line"
+			handle_cgi "$line"
+			break
+		elif printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE).*HTTP'; then
+			log 5 "Calling handle_http with $line"
+			handle_http "$line"
+			break
+		else
+			log 6 "No handler found yet for request beginning with: $line"
+		fi
+	done
+	log 5 "Completed handle_request"
 }
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
 # This accepts and handles http and non-http input containing env code
 #
 handle_http(){
-	log 5 'Running handle_http/handle_cgi'
+	log 5 "Running handle_http/handle_cgi with '$1'"
 	{
 		local line="x"
 		local len=0
 
 		read line
 		#echo "FIRST-LINE: $line" >&2
-		printf '%s\n' "$line"
+		printf '%s%s\n' "$1" "$line"
 		if printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE)'; then
 		# If this is a valid http request, ingest it as such...
-			#echo "Reading raw http headers from stdin." >&2
+			log 5 "Reading raw http headers from stdin."
 			printf '%s\n' "$line"
 			while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
 				read line
@@ -174,39 +187,32 @@ handle_http(){
 	log 5 "End handle_http/handle_cgi"
 }
 
-#alias handle_cgi='handle_http'
+#alias handle_cgi='handle_http()'
 handle_cgi() { handle_http $*; }
 
 # Accepts and parses SCGI input, and sends it to call_daemon_with_fifo.
+# This function expects $1 containing the total num of characters in the scgi headers.
 handle_scgi() {
-	log 5 "Begin handle_scgi"
+	log 5 "Begin handle_scgi with '$1'"
 	{
-		local len=''
-		local chr=''
-		
-		# Reads first characters of scgi input, until <colon> or <space>,
-		# and uses them to build the header-length integer.
-		while echo "$chr" | grep -qv '[ \:]' ; do
-			#echo "CHR: $chr" >&2
-			len="$len$chr"
-			read -rn1 chr
-		done
-		
-		# Opens stdin for reading (and keeps it open).
-		# This does not appear to be necessary at the moment.
-		#exec 0<&0
+		# Arg $1 contains the total length of headers.
+		# Gets all but the last character of $1 (last chr is a ':', which we don't want).
+		local len="${1:0:$((${#1}-1))}"
 		
 		log 5 "Reading $len characters of scgi input."
 	
 		# Reads header length, reads headers, translates into env var code.
-		scgi_headers=$(
+		local scgi_headers=$(
 			dd count=$(($len)) bs=1 2>/dev/null |
 			tr '\0' '\n' |
 			sed '$!N;'"s/\n/='/;s/$/'/"
 		)
+		log 6 '-echo "SCGI headers $scgi_headers"'
 		
-		# Sets var to content length of request body.
-		eval $(echo $scgi_headers | sed 's/^\(CONTENT_LENGTH\):/\1=/')
+		# Extracts CONTENT_LENGTH from scgi_headers and evals it into a var.
+		local content_length_var=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
+		log 6 "Scgi body content length declaration $content_length_var"
+		eval "$content_length_var"
 	
 		# Gets remaining stdin containing request body, if exists.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
@@ -215,12 +221,8 @@ handle_scgi() {
 			#echo "Request body: $REQUEST_BODY"
 		fi
 		
-		# Closes stdin for reading (which also closes stdin for writing and clears stdin).
-		#exec 0<&-
-		#echo "Done reading scgi input, closed stdin."
-	} 2>&1 >&103 #>&2
-	
-	#echo "SCGI Headers: $scgi_headers" >&2
+		# All stdout from this grouping should go to log.
+	} >&103
 	
 	# Outputs scgi env and local env to call_daemon_with_fifo.
 	{
@@ -241,7 +243,7 @@ eval_input_env() {
 		eval "$evalable_input"
 		set +a
 		# { echo "Evald env:"; export -p; }
-	} 2>&1 >&103 #>&2
+	} >&103
 }
 
 # Returns evalable env code from stdin.
@@ -261,7 +263,7 @@ eval_haserl_env() {
 		set -a
 		eval "$haserl_env"
 		set +a
-	} >&2
+	} >&103
 }
 
 # Passes stdin (env list) to daemon via fifo,
@@ -276,31 +278,49 @@ call_daemon_with_fifo() {
 	
 	# Receive and cleanup fifo-output.
 	cat "$fifo_output" &&
-	rm -f "$fifo_output" >&2
+	rm -f "$fifo_output" >&103
 }
 
-start() {
-	main_server $1
+# Runs the daemon and socat processes in paralell
+start_server() {
+	#echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
+	log 3 "Starting the Haserl Framework Server v0.0.1 with log-level ($LOG_LEVEL)"
+	# Spawn a subshell, otherwise we'll kill the main shell.
+	# TODO: Consider using start-stop-daemon.	
+	(
+		echo "$$" > "$SOCAT_SERVER_PID"
+		log 4 'Starting main_server'
+		# Note the 5th field in /proc/<pid>/stat is the pgid.
+	
+		# daemon_server &
+		# sd="$!"
+		# socat_server  #&
+		# #ss="$!"
+		# wait $sd #$ss
+		
+		daemon_server | socat_server $1
+	)
 }
 
-stop() {
+stop_server() {
 	kill -15 -"$(cat $SOCAT_SERVER_PID)"
 }
 
-handle() {
-	handle_$1
-}
+# handle() {
+# 	handle_$1
+# }
 
 # Handles runtime/startup command processing
+log 5 "Running server case statement with args: $@"
 case $1 in
 	"start")
-		start $2
+		start_server $2
 		;;
 	"stop")
-		stop $2
+		stop_server $2
 		;;
 	"handle")
-		handle $2
+		handle_request $2
 		;;
 esac
 
