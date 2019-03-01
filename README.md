@@ -1,38 +1,65 @@
 # Haserl Framework
 
-The Haserl Framework is a set of shell functions that allow one to build
-MVC-style web frameworks based on cgi, shell scripts, and haserl templating.
+The Haserl Framework is a set of shell scripts and functions that allow one to build
+MVC-style web applications based on shell scripting and haserl templating.
 It is similar to Ruby's Sinatra framework in structure, functionality, and spirit.
 
-Haserl Framework is developed primarily for embedded systems running minimal *nix
-distributions with limited space and shell functionality. The framework itself has
-minimal functionality but can be extended infinitely at the developer's discretion.
+Haserl Framework is developed primarily for embedded systems running minimal Linix
+distributions with limited space and shell functionality. The framework itself is
+relatively bare-bones but can easily be extended.
 
-## Flow
+Effort has be made to keep the framework as POSIX compliant as possible, but that
+is an ongoing pursuit. The original development platform for Haserl Framework
+was OpenWRT's Ash/Busybox shell.
 
-* A user makes a request to a cgi script on an embedded platform.
-* The cgi script runs as ```#!/usr/bin/haserl``` (or wherever haserl is installed).
-* The haserl script sends the environment to a FIFO file created by the framework.
-* The FIFO input file is read by the framework daemon.
-* The framework daemon processes the request and returns the entire response to a
-  FIFO output file.
-* The FIFO output file is read by the haserl-cgi script, and the response is passed
-  back to the cgi interpreter.
+## Flow and Architecture
+
+* A web application written with the framework's shell-based DSL
+  is run as a daemon.
+  
+* The web server sends requests to the daemon using one of two methods.
+
+  * Requests are passed to and from the web server, via scgi request, to a socket
+    or tcp listener managed by the framework daemon.
+  
+  * Requests are passed (and responses received) through a pair of FIFO
+    files managed by the framework daemon.
+   
+* Subshells wrap each request process to prevent undesirable modification
+  of the daemon environment.
+  
+* During request processing, Haserl env variables are accessible in both
+  the 'action' and the 'views'.
+  
+* Views, including layouts and partials, are rendered with Haserl.
 
 
 ## Dependencies
 
 * haserl
+* socat
 * gpg
 * base64
-* A web server with CGI support
+* A web server with CGI or SCGI support.
+
+*```gpg``` and ```base64``` are only required if you want secure cookies (recommended).*
+
+*```socat``` is not required if your app runs on a single system under CGI only.*
 
 
 ## Installation
 
-Clone the haserl-framework library with Git
+Clone the haserl-framework library with Git.
 
-    https://github.com/ginjo/haserl-framework.git
+    cd /usr/local/
+
+    git clone https://github.com/ginjo/haserl-framework.git
+
+Install dependencies. Example for OpenWRT/Busybox:
+
+    opkg update
+    
+    opkg install coreutils-base64 gnupg haserl socat
 
 
 ## Basic Setup
@@ -51,14 +78,14 @@ In the ```app.sh``` file (or whatever you want to name it), add the following sh
 ```shell
   # app.sh
   
-  source <path-to-haserl-framework.sh> <path-to-haserl-framework.sh>
+  eval $(<path-to-haserl-framework/lib/load.sh>)
 
   route '/home' <optional-request-method> <<- !!
     # render <view-file> <optional-layout-file>
     render home.html layout.html
   !!
 
-  server
+  start scgi  # <scgi|cgi|http>
 ```
 Note the ```route``` and ```render``` functions. They are part of a simple DSL that
 is the core UI of the framework. More on that below.
@@ -67,6 +94,8 @@ is the core UI of the framework. More on that below.
 In the views directory, create a view file and populate it with haserl template code:
 ```haserl
     <!-- views/home.html -->
+    
+    <% . $HF_FRAMEWORK %>
     
     <h3>Linux Release</h3>
     <pre>
@@ -78,7 +107,7 @@ Optionally create a layout file in the views directory:
 ```haserl
     <!-- views/home.html -->
 
-    <% source path-to-haserl-framework.sh %>
+    <% . $HF_FRAMEWORK %>
     
     <html>
     <body>
@@ -95,20 +124,46 @@ Some shells can't export functions, but others can.
 If you're using a shell that can export functions,
 you don't need to source the framework functions in your views.
 
-Finally, symlink the haserl-framework proxy.cgi file to your cgi directory
-(or to wherever your web server recognizes cgi programs). Make sure to
-set the executable bit of this file, if it is not already.
+If you are using a web server with SCGI reverse-proxy capabilities,
+point the scgi-proxy-pass directive to the backend URL.
+Here's an NGINX example:
 
-```shell
-  ln -s /usr/local/haserl-framework/lib/proxy.cgi /var/www/cgi-bin/
+```nginx
+  # nginx.conf
+  
+  location /my_app {
+    include   scgi_params;
+    scgi_pass localhost:1500;
+  }
 ```
 
-Or create your own .cgi file and insert the following code, remembering
-to adjust the file paths and shebang line to suit your installation.
+*See NGINX's default scgi_params for a good default set of pass-through variables to include.*
+
+In addition to the usual NGINX pass-through variables, here are some additional settings
+to get path-info, script-name, and request-scheme variables passed to your application:
+
+```nginx
+  # nginx.conf
+  
+  # Path-info and script-name must be calculated by nginx.
+  # Note the use of fastcgi functions. These work even though we're using scgi.
+  #
+  fastcgi_split_path_info        ^(/scgi)(/.+)$;
+  scgi_param  PATH_INFO          $fastcgi_path_info;
+  scgi_param  SCRIPT_NAME        $fastcgi_script_name;
+
+  # Request-scheme may not be included in the nginx default scgi_params file.
+  scgi_param  REQUEST_SCHEME     $scheme;
+```
+
+If you are using CGI, create a CGI script and insert the following code.
+Remember to adjust the file paths and shebang line to suit your installation.
+You can name the file anything. In this example ```proxy.cgi``` is a descriptive name,
+since the cgi script is simply passing data to the framework daemon.
 
 ```haserl
-  #!/usr/bin/haserl
-  <% export -p > /tmp/haserl_framework_input && cat /tmp/haserl_framework_output %>
+  #!/usr/sh
+  <% export -p > /tmp/fifo_input && cat /tmp/fifo_output %>
 ```
 
 Start the server:
@@ -139,9 +194,10 @@ in your app.sh file _before_ sourcing haserl-framework.sh.
 | Name          | Description                               | Default                 |
 | ---           | ---                                       | ---                     |
 | SECRET        | secret key string for cookie encryption   | \<calculated\>          |
-| FIFO_INPUT    | path and name of fifo input file          | haserl_framework_input  |
-| FIFO_OUTPUT   | path and name of fifo output file         | haserl_framework_output |
+| FIFO_INPUT    | path and name of fifo input file          | fifo_input              |
+| FIFO_OUTPUT   | path and name of fifo output file         | fifo_output             |
 | APPDIR        | path to app directory                     | \<calculated\>          |
+| LOG_LEVEL     | 1 through 6 (FATAL through TRACE)         | 4 (INFO)                |
 
 
 ## Usage
@@ -155,6 +211,8 @@ in your app.sh file _before_ sourcing haserl-framework.sh.
 ### Views...
 
 ### Layouts...
+
+### Server...
 
 ### Helpers...
 

@@ -22,14 +22,13 @@
 # This should not fail: http://host/cgi-bin/proxy.cgi/env?dir=%3Bcat%20/etc/passwd
 # This should not fail: http://host/cgi-bin/proxy.cgi/env?;%3Bcat%20/etc/passwd;=something
 
-. "$(pwd)/.env"
 
 # Uses SECRET or sets it to random string.
 export SECRET="${SECRET:=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 128)}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
+export HF_FRAMEWORK="${HF_FRAMEWORK:=$HF_DIRNAME/framework.sh}"
 
 . "$HF_DIRNAME/logging.sh"
-
 
 # Exports all variable definitions during initial setup.
 set -a
@@ -435,15 +434,15 @@ server_socat() {
 # Runs the setup function after all other functions have loaded.
 setup
 
-# We need the framwork path so a helper can load the framework in views (which are a separate process).
-# TODO: Should this be in the setup() function?
-if [ -z "$framework" ]; then
-  # This only gets the app path.
-  #framework="$(readlink -f "$0")"
-  # This gets the 2nd arg that was passed to the 'source' command in the app.
-  # It's hacky, but it works just fine.
-  framework="${1:-$HF_DIRNAME/framework.sh}"
-fi
+# # We need the framwork path so a helper can load the framework in views (which are a separate process).
+# # TODO: Should this be in the setup() function?
+# if [ -z "$framework" ]; then
+#   # This only gets the app path.
+#   #framework="$(readlink -f "$0")"
+#   # This gets the 2nd arg that was passed to the 'source' command in the app.
+#   # It's hacky, but it works just fine.
+#   framework="${1:-$HF_DIRNAME/framework.sh}"
+# fi
 
 set +a
 

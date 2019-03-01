@@ -1,12 +1,11 @@
 #!/bin/sh
 
-. "$(pwd)/.env"
-
 export FIFO_INPUT="${FIFO_INPUT:=/tmp/fifo_input}"
 export FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/fifo_output}"
 export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
 export SOCAT_SERVER_PID="${SOCAT_SERVER_PID:=/tmp/socat_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
+export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 
 . "$HF_DIRNAME/logging.sh"
 
@@ -135,7 +134,7 @@ socat_server(){
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
-		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_DIRNAME}/server.sh handle ${1:-scgi}" 2>&103
+		socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}" 2>&103
 	} >&104
 }
 
