@@ -33,7 +33,10 @@ log() {
 		
 		#echo "Checking input log level $1 against setting $LOG_LEVEL"
 		if [ $level -le $LOG_LEVEL ]; then
-			printf '%s : ' "$(date -Iseconds) logpid ${$}$([ $LOG_LEVEL -gt 4 ] && timer ' ') $LOG_NAME ($level)"
+			if [ $LOG_LEVEL -ge 5 ]; then
+			  more_log_data="logpid ${$}$(timer ' ')"
+			fi
+			printf '%s : ' "$(date -Iseconds) $more_log_data $LOG_NAME ($level)" | sed 's/ \+/ /g'
 			if [ ! -z "$cmd" ]; then				
 				eval "${cmd/-/}"
 			elif [ ! -z "$str" ]; then
@@ -78,41 +81,28 @@ if [ -z "$LOGGING_IS_SETUP" ]; then
 		mkfifo /tmp/log_10$x
 
 		if [ $x -le $LOG_LEVEL ]; then
-			#( while : ; do cat <&10$x | log $x; done ) &
-			#( while : ; do log $x <&10$x; done ) &
-			#( while : ; do log $x </tmp/log_10$x; done ) &
-			#( while : ; do cat </tmp/log_10$x; done ) &
-			#( while : ; do log "$x" "$(cat </tmp/log_10$x)"; done ) &
-			#( while : ; do cat </tmp/log_10$x | tee -a log.log | log "$x"; done ) &
-			# while :; do
-			# 	#local input=$(cat /tmp/log_10$x)
-			# 	#echo "LOG Daemon Input: $input" | tee -a log.log
-			# 	cat /tmp/log_10$x | tee -a log.log
-			# 	echo "CAT Finished!" | tee -a log.log
-			# 	log "$x" "should be input here"
-			# done &
 			
 			while :; do
 				IFS= read -r line </tmp/log_10$x
-				echo "Log from FIFO: $line" | log $x
+				echo "$line" | log $x
 			done &
 			
-			# TODO: Consider putting these FD manipulations in a function.
-			eval "exec 10$x>&-"
-			if [ $x -le $LOG_LEVEL ]; then
-				eval "exec 10$x>/tmp/log_10$x"
-			else
-				eval "exec 10$x>/dev/null"
-			fi
-			
-			log 6 "LOGGER_PID ($x) $! $$"
+			log 6 "Logger daemon ($x) pid $! $$ listening to &10$x and /tmp/log_10$x"
+		fi
+		
+		# TODO: Consider putting these FD manipulations in a function.
+		eval "exec 10$x>&-"
+		if [ $x -le $LOG_LEVEL ]; then
+			eval "exec 10$x>/tmp/log_10$x"
+		else
+			eval "exec 10$x>/dev/null"
 		fi
 	done
 	
 	# See first half of this re-route above.
 	# This has go after the fifo is opened for reading, otherwise it breaks.'
-	#exec 2>&103
-	exec 2>/tmp/log_103
+	exec 2>&103
+	#exec 2>/tmp/log_103
 	
 	# Creates file-descriptors and redirections to allow 
 	# command output to be redirected to the logger.
@@ -143,6 +133,7 @@ if [ -z "$LOGGING_IS_SETUP" ]; then
 	
 	echo "Logging activated" | log 4
 	# Print redirections to logger.
+	log 6 "FD redirections for pid $$"
 	log 6 '-ls -l /proc/$$/fd/ | awk '\''{print $9,$10,$11}'\''' &
 	
 fi

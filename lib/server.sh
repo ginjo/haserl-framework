@@ -119,7 +119,7 @@ socat_server(){
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
 		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
-	} >&2 #>/tmp/log_103  #>&103
+	} >&2
 }
 
 # Handles request from socat server.
@@ -130,7 +130,7 @@ handle_request() {
 	while :; do  #[ "$?" == "0" ]; do
 		#chr=$(dd count=1 bs=1 2>/dev/null)
 		IFS= read -rn1 chr
-		echo "CHR: $chr" >&2 #>/tmp/log_105
+		echo "Reading request chr: $chr" >&106
 		line="$line$chr"
 		log 6 "Choosing handler for request beginning with: $line"
 		if printf '%s' "$line" | grep -qE '^[0-9]+:'; then
@@ -293,13 +293,13 @@ start_server() {
 	
 	( daemon_server | socat_server $1 ) &
 	
-	log 3 "Haserl Framework Server v0.0.1 started with log-level ($LOG_LEVEL)"
+	log 3 "Haserl Framework Server v0.0.1 started with log-level ($LOG_LEVEL) pid ($$)"
 	echo "TESTING /tmp/log_103" >/tmp/log_103
 	echo "TESTING fd 102" >&102
-	echo "TESTING logger stdin" | log 3
-	log 5 "PID $$"
-	log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
-	echo "Test stderr..." >&2
+	#echo "TESTING logger stdin" | log 3
+	#log 5 "PID $$"
+	#log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
+	echo "Test stderr... >&2" >&2
 	cat - >/dev/null
 }
 
