@@ -23,7 +23,7 @@ handle_trap(){
 	#kill -15 -$$
 	#kill -15 -"$(cat $SOCAT_SERVER_PID)"
 	rm -f "$SOCAT_SERVER_PID"
-	printf '\n%s\n' "Goodbye!" >&2
+	printf '\n%s\n' "Goodbye!"
 	kill -15 -$$
 }
 
@@ -119,7 +119,7 @@ socat_server(){
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
 		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
-	} >&103
+	} >&2 #>/tmp/log_103  #>&103
 }
 
 # Handles request from socat server.
@@ -130,6 +130,7 @@ handle_request() {
 	while :; do  #[ "$?" == "0" ]; do
 		#chr=$(dd count=1 bs=1 2>/dev/null)
 		IFS= read -rn1 chr
+		echo "CHR: $chr" >&2 #>/tmp/log_105
 		line="$line$chr"
 		log 6 "Choosing handler for request beginning with: $line"
 		if printf '%s' "$line" | grep -qE '^[0-9]+:'; then
@@ -149,7 +150,7 @@ handle_request() {
 		fi
 	done
 	log 5 "Completed handle_request"
-}
+} #2>/tmp/log_102  #2>&102
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
 # This accepts and handles http and non-http input containing env code
@@ -161,7 +162,7 @@ handle_http(){
 		local len=0
 
 		read line
-		#echo "FIRST-LINE: $line" >&2
+		log 6 "FIRST-LINE: $line"
 		printf '%s%s\n' "$1" "$line"
 		if printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE)'; then
 		# If this is a valid http request, ingest it as such...
@@ -173,11 +174,11 @@ handle_http(){
 				printf '%s\n' "$line"
 			done
 			if [ $(($len)) > 0 ]; then
-				#echo "Calling 'head' on stdin with -c $len" >&2
+				log 6 "Calling 'head' on stdin with -c $len"
 				head -c $(($len))
 			fi
 		else # If this is just a list of env vars...
-			#echo "Calling 'cat' on stdin." >&2
+			log 6 "Calling 'cat' on stdin"
 			cat -
 		fi
 		
@@ -222,7 +223,7 @@ handle_scgi() {
 		fi
 		
 		# All stdout from this grouping should go to log.
-	} >&103
+	} >&2 #>/tmp/log_103  #>&103
 	
 	# Outputs scgi env and local env to call_daemon_with_fifo.
 	{
@@ -243,7 +244,7 @@ eval_input_env() {
 		eval "$evalable_input"
 		set +a
 		# { echo "Evald env:"; export -p; }
-	} >&103
+	} >&2 #>/tmp/log_103  #>&103
 }
 
 # Returns evalable env code from stdin.
@@ -256,14 +257,14 @@ evalable_env_from_input() {
 eval_haserl_env() {
 	{
 		log 5 "Evaling env with haserl."
-		#echo "Sending REQUEST_BODY to haserl:" >&2
-		#echo "$REQUEST_BODY" >&2
+		log 6 "Sending REQUEST_BODY to haserl:"
+		log 6 '-echo "$REQUEST_BODY"'
 		haserl_env=$(printf '%s' "$REQUEST_BODY" | haserl "$HASERL_ENV")
-		#echo "Haserl env: $haserl_env" >&2
+		log 6 '-echo "Haserl env: $haserl_env"'
 		set -a
 		eval "$haserl_env"
 		set +a
-	} >&103
+	} >&2 #>/tmp/log_103  #>&103
 }
 
 # Passes stdin (env list) to daemon via fifo,
@@ -273,42 +274,38 @@ call_daemon_with_fifo() {
 		local fifo_output="${FIFO_OUTPUT}_$$"
 		cat -
 		printf '%s\n' "export FIFO_OUTPUT='$fifo_output'"
-		mkfifo "$fifo_output" >&2
+		mkfifo "$fifo_output" >&2 #>/tmp/log_102
 	} >"$FIFO_INPUT"
 	
 	# Receive and cleanup fifo-output.
 	cat "$fifo_output" &&
-	rm -f "$fifo_output" >&103
+	rm -f "$fifo_output" >&2 #>/tmp/log_103  #>&103
 }
 
 # Runs the daemon and socat processes in paralell
 start_server() {
 	#echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
-	log 3 "Starting the Haserl Framework Server v0.0.1 with log-level ($LOG_LEVEL)"
 	# Spawn a subshell, otherwise we'll kill the main shell.
-	# TODO: Consider using start-stop-daemon.	
-	(
-		echo "$$" > "$SOCAT_SERVER_PID"
-		log 4 'Starting main_server'
-		# Note the 5th field in /proc/<pid>/stat is the pgid.
+	# TODO: Consider using start-stop-daemon.
+	echo "$$" > "$SOCAT_SERVER_PID"
+	log 4 'Starting main_server'
+	# Note the 5th field in /proc/<pid>/stat is the pgid.
 	
-		# daemon_server &
-		# sd="$!"
-		# socat_server  #&
-		# #ss="$!"
-		# wait $sd #$ss
-		
-		daemon_server | socat_server $1
-	)
+	( daemon_server | socat_server $1 ) &
+	
+	log 3 "Haserl Framework Server v0.0.1 started with log-level ($LOG_LEVEL)"
+	echo "TESTING /tmp/log_103" >/tmp/log_103
+	echo "TESTING fd 102" >&102
+	echo "TESTING logger stdin" | log 3
+	log 5 "PID $$"
+	log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
+	echo "Test stderr..." >&2
+	cat - >/dev/null
 }
 
 stop_server() {
 	kill -15 -"$(cat $SOCAT_SERVER_PID)"
 }
-
-# handle() {
-# 	handle_$1
-# }
 
 # Handles runtime/startup command processing
 log 5 "Running server case statement with args: $@"
