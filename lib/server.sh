@@ -120,7 +120,7 @@ socat_server(){
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
 		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
-	} >&104 2>&1  # Othwerwise, socat spits out too much data.
+	} >&105 2>&1  # Othwerwise, socat spits out too much data.
 }
 
 # Handles request from socat server.
@@ -298,14 +298,18 @@ start_server() {
 	
 	( daemon_server | socat_server $1 ) &
 	
-	log 3 "Haserl Framework Server v0.0.1 started with log-level ($LOG_LEVEL) pid ($$)"
+	log 3 "Haserl Framework Server v0.0.1, log-level $LOG_LEVEL, pid $$"
 	#echo "TESTING /tmp/log_103" >/tmp/log_103
 	#echo "TESTING fd 102" >&102
 	#echo "TESTING logger stdin" | log 3
 	#log 5 "PID $$"
 	#log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
 	#echo "Test stderr... >&2" >&2
-	cat - >/dev/null
+	if [ "$2" == 'debug' -o "$HF_DEBUG" == 'true' ]; then
+		while :; do IFS= read -r line; eval "$line"; done
+	else
+		while :; do sleep 60; done
+	fi
 }
 
 stop_server() {
