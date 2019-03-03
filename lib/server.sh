@@ -17,7 +17,7 @@ trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
 
 # Handles cleanup when the application quits.
 handle_trap(){
-	log 4 "Running handle_trap $$"
+	log 5 "Running handle_trap for $$"
 	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output"
 	#kill -9 $sd
 	#kill -15 -$$
@@ -52,7 +52,7 @@ daemon_server() {
 	while [ $? -eq 0 ]; do
 		# Forks a subshell to keep each request environment separate.
 		local input_env="$(cat $FIFO_INPUT)"
-		log 5 "Begin daemon loop"
+		log 5 "Begin request loop"
 		(	
 			
 			# If there are ANY errors in this subshell, exit the subshell and go back to top of loop.
@@ -70,8 +70,6 @@ daemon_server() {
 			
 			# echo "Daemon evaled env, after haserl:" >&2
 			# export -p >&2
-			
-			log 3 "$REQUEST_METHOD $REQUEST_URI"
 			
 			# Outputs the response to the fifo-output (possibly specific to this subshell).
 			# The upstream caller should know how to find the correct FIFO_OUTPUT file.
@@ -91,7 +89,10 @@ daemon_server() {
 				run
 				
 			} > "$FIFO_OUTPUT"
-			log 5 "End daemon loop"
+			
+			log 5 "End request loop"
+			log 3 "$REQUEST_METHOD $REQUEST_URI"
+			
 		) &
 	done
 }
@@ -119,12 +120,12 @@ socat_server(){
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
 		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
-	} >&2
+	} >&104 2>&1  # Othwerwise, socat spits out too much data.
 }
 
 # Handles request from socat server.
 handle_request() {
-	log 5 "Running handle_request"
+	log 5 "Begin handle_request"
 	local line=''
 	local chr=''
 	while :; do  #[ "$?" == "0" ]; do
@@ -149,14 +150,14 @@ handle_request() {
 			log 6 "No handler found yet for request beginning with: $line"
 		fi
 	done
-	log 5 "Completed handle_request"
-} #2>/tmp/log_102  #2>&102
+	log 5 "End handle_request"
+} # Stdout goes back to socat server. Do not redirect.
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
 # This accepts and handles http and non-http input containing env code
 #
 handle_http(){
-	log 5 "Running handle_http/handle_cgi with '$1'"
+	log 5 "Begin handle_http/handle_cgi with '$1'"
 	{
 		local line="x"
 		local len=0
@@ -185,8 +186,9 @@ handle_http(){
 		export -p
 		
 	} | call_daemon_with_fifo
+	
 	log 5 "End handle_http/handle_cgi"
-}
+} # Stdout goes back to socat server. Do not redirect.
 
 #alias handle_cgi='handle_http()'
 handle_cgi() { handle_http $*; }
@@ -232,19 +234,19 @@ handle_scgi() {
 	} | call_daemon_with_fifo
 	
 	log 5 "End handle_scgi"
-}
+} # Stdout goes back to socat server. Do not redirect.
 
 # Filters input for only single-quoted safely eval'able var definitions,
 # then evals each of those lines.
 # Expects input as $1
 eval_input_env() {
+	log 5 "Evaling input env vars."
 	{
 		evalable_input=$(evalable_env_from_input "$1")
 		set -a
 		eval "$evalable_input"
 		set +a
-		# { echo "Evald env:"; export -p; }
-	} >&2 #>/tmp/log_103  #>&103
+	} >&2
 }
 
 # Returns evalable env code from stdin.
@@ -264,12 +266,13 @@ eval_haserl_env() {
 		set -a
 		eval "$haserl_env"
 		set +a
-	} >&2 #>/tmp/log_103  #>&103
+	} >&2
 }
 
 # Passes stdin (env list) to daemon via fifo,
 # Receives response via private fifo.
 call_daemon_with_fifo() {
+	log 5 "Sending data as env vars to app daemon with fifo $FIFO_INPUT"
 	{
 		local fifo_output="${FIFO_OUTPUT}_$$"
 		cat -
@@ -278,8 +281,10 @@ call_daemon_with_fifo() {
 	} >"$FIFO_INPUT"
 	
 	# Receive and cleanup fifo-output.
+	log 5 "Waiting for return data app daemon via fifo $fifo_output"
 	cat "$fifo_output" &&
-	rm -f "$fifo_output" >&2 #>/tmp/log_103  #>&103
+	rm -f "$fifo_output" >&2
+	log 5 "Received response from app daemon via fifo $fifo_output"
 }
 
 # Runs the daemon and socat processes in paralell
@@ -294,12 +299,12 @@ start_server() {
 	( daemon_server | socat_server $1 ) &
 	
 	log 3 "Haserl Framework Server v0.0.1 started with log-level ($LOG_LEVEL) pid ($$)"
-	echo "TESTING /tmp/log_103" >/tmp/log_103
-	echo "TESTING fd 102" >&102
+	#echo "TESTING /tmp/log_103" >/tmp/log_103
+	#echo "TESTING fd 102" >&102
 	#echo "TESTING logger stdin" | log 3
 	#log 5 "PID $$"
 	#log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
-	echo "Test stderr... >&2" >&2
+	#echo "Test stderr... >&2" >&2
 	cat - >/dev/null
 }
 
