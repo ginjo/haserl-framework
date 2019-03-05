@@ -100,7 +100,7 @@ if [ -z "$LOGGING_IS_SETUP" ]; then
 	done
 	
 	# See first half of this re-route above.
-	# This has go after the fifo is opened for reading, otherwise it breaks.'
+	# This has to go after the fifo is opened for reading, otherwise it breaks.'
 	exec 2>&103
 	#exec 2>/tmp/log_103
 	
