@@ -23,6 +23,15 @@
 #   echo 'Hey' | nc wndr3800 1500
 #
 
+# Another Simple Example
+#
+# socat -t1 tcp-l:1500,reuseaddr,fork system:'cat <fifo2 & cat - >fifo'
+#
+# while :; do echo "loop"; cat fifo | (for x in 1 2 3; do IFS= read -r resp; echo "Reply: $resp"; done | tee fifo2); done
+#
+# printf '%s\r\n%s\r\n%s\r\n' 'hey' 'there' 'bill' | nc wndr3800 1500
+#
+
 export FIFO_INPUT="${FIFO_INPUT:=/tmp/fifo_input}"
 export FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/fifo_output}"
 export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
@@ -64,72 +73,148 @@ handle_trap(){
 # Expects a lf delimited list of env variable definitions with single-quoted data.
 # Example: export MY_VAR='hey there'
 #
-daemon_server() {
+# daemon_server() {
+# 	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+# 	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
+# 	chmod 600 "$FIFO_INPUT" "$FIFO_OUTPUT"
+# 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
+# 	
+# 	log 4 "Starting application server ($$)"
+# 	
+# 	while [ $? -eq 0 ]; do
+# 		# Forks a subshell to keep each request environment separate.
+# 		local input_env="$(cat $FIFO_INPUT)"
+# 		log 5 "Begin request loop"
+# 		(	
+# 			
+# 			# If there are ANY errors in this subshell, exit the subshell and go back to top of loop.
+# 			# At that point, the while-loop will stop and the daemon_server will return.
+# 			# Not sure if that's what we want, but this was created this way to prevent runaway while-loop.
+# 			#set -e
+# 			
+# 			eval_input_env "$input_env"
+# 			
+# 			# echo "Daemon evaled env, before haserl:" >&2
+# 			# export -p >&2
+# 			
+# 			unset TERMCAP
+# 			eval_haserl_env
+# 			
+# 			# echo "Daemon evaled env, after haserl:" >&2
+# 			# export -p >&2
+# 			
+# 			# Outputs the response to the fifo-output (possibly specific to this subshell).
+# 			# The upstream caller should know how to find the correct FIFO_OUTPUT file.
+# 			# NOTE: Do not send raw status back to CGI. Instead, send it like a header: 'Status: 200 OK'
+# 			#       CGI will create the http status line for you!
+# 			{
+# 				# Returns basic headers for cgi/haserl script.
+# 				# printf '%s\r\n' "Status: 200"
+# 				# printf '%s\r\n' "Content-Type: text/plain"
+# 				# 			  printf '%s\r\n' "Date: $(date)"
+# 				# printf '%s\r\n' "Frontend-Server: $HTTP_HOST"
+# 				# 			  printf '%s\r\n' "Backend-Server: $SOCAT_SOCKADDR:$SOCAT_SOCKPORT"
+# 				# 			  printf '%s\r\n' "Client: $SOCAT_PEERADDR:$SOCAT_PEERPORT"
+# 				# printf '%s\r\n'
+# 				# export -p
+# 				
+# 				run
+# 				
+# 			} > "$FIFO_OUTPUT"
+# 			
+# 			log 5 "End request loop"
+# 			log 3 "$REQUEST_METHOD $REQUEST_URI"
+# 			
+# 		) &
+# 	done
+# }
+
+
+request_loop() {
 	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
 	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
 	chmod 600 "$FIFO_INPUT" "$FIFO_OUTPUT"
+	# Sets up the haserl template file.
 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
-	
-	log 4 "Starting application server ($$)"
-	
+	log 4 "Starting request loop listener ($$)"
+
 	while [ $? -eq 0 ]; do
-		# Forks a subshell to keep each request environment separate.
-		local input_env="$(cat $FIFO_INPUT)"
-		log 5 "Begin request loop"
-		(	
-			
-			# If there are ANY errors in this subshell, exit the subshell and go back to top of loop.
-			# At that point, the while-loop will stop and the daemon_server will return.
-			# Not sure if that's what we want, but this was created this way to prevent runaway while-loop.
-			#set -e
-			
-			eval_input_env "$input_env"
-			
-			# echo "Daemon evaled env, before haserl:" >&2
-			# export -p >&2
-			
-			unset TERMCAP
-			eval_haserl_env
-			
-			# echo "Daemon evaled env, after haserl:" >&2
-			# export -p >&2
-			
-			# Outputs the response to the fifo-output (possibly specific to this subshell).
-			# The upstream caller should know how to find the correct FIFO_OUTPUT file.
-			# NOTE: Do not send raw status back to CGI. Instead, send it like a header: 'Status: 200 OK'
-			#       CGI will create the http status line for you!
-			{
-				# Returns basic headers for cgi/haserl script.
-				# printf '%s\r\n' "Status: 200"
-				# printf '%s\r\n' "Content-Type: text/plain"
-				# 			  printf '%s\r\n' "Date: $(date)"
-				# printf '%s\r\n' "Frontend-Server: $HTTP_HOST"
-				# 			  printf '%s\r\n' "Backend-Server: $SOCAT_SOCKADDR:$SOCAT_SOCKPORT"
-				# 			  printf '%s\r\n' "Client: $SOCAT_PEERADDR:$SOCAT_PEERPORT"
-				# printf '%s\r\n'
-				# export -p
-				
-				run
-				
-			} > "$FIFO_OUTPUT"
-			
-			log 5 "End request loop"
-			log 3 "$REQUEST_METHOD $REQUEST_URI"
-			
-		) &
+		log 5 "Begin request while-loop"
+		#exec 0<"$FIFO_INPUT"
+		#exec 1>"$FIFO_OUTPUT"
+		handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
+		printf '\r\n\0' >"$FIFO_OUTPUT"
+		
+		# # Go around again, if fifo is locked.
+		# log 6 "Fifo lock: ${FIFO_LOCK:-<null/unset>}	"
+		# if [ ! -z "$FIFO_LOCK" ]; then
+		# 	sleep 1
+		# 	continue
+		# fi
+		# export FIFO_LOCK=true
+		# 
+		# log 5 "Begin request loop"
+		# #IFS= read -rn1 chr <"$FIFO_INPUT"
+		# #local input=$(tr '\0' '\n' <"$FIFO_INPUT")
+		# # Forks a subshell to keep each request environment separate.
+		# 
+		# cat "$FIFO_INPUT" | tr '\0' '\n' | (
+		# #cat "$input" | (
+		# 	log 5 "Begin request loop subshell"
+		# 	# The intentional separation of these two functions is intended to reduce deadlocks.. and anything else?
+		# 	# It's ok here to use a string var, since the output shouldn't contain null bytes by this point.
+		# 	
+		# 	#local output=$(handle_request "$chr")
+		# 	log 5 "Printing output to $FIFO_OUTPUT"
+		# 	#log 6 '-echo "Output: ${output:0:16}..."'
+		# 	#printf '%s\n\0' "$output" > "$FIFO_OUTPUT"
+		# 	
+		# 	handle_request "$chr" > "$FIFO_OUTPUT"
+		# 
+		# 	log 5 "End request loop"
+		# 	
+		# 	# Does this break or help the output?
+		# 	#exec 1<&-; exec 0>&-
+		# 	
+		# 	unset FIFO_LOCK
+		# ) #&
+		# #exec 1<&-; exec 0>&-
 	done
+	log 2 "Leaving request loop listener ($$) exit code ($?)"
+}
+
+# Parse & eval the request env, and call the framework action(s).
+# Output will be sent back to client.
+process_request() {
+	local input_env="$(cat -)"
+	log 5 "Begin process_request"
+		
+	eval_input_env "$input_env"
+	unset TERMCAP
+	eval_haserl_env
+	log 6 "Calling run() with env: $(env)"
+
+	# TODO: Put a conditional here that controls whether or not
+	# to send the status header. You would only send it, if you
+	# are receiving http requests directly from the client, with
+	# no front-end web server.
+	printf '%s\r\n' "HTTP/1.1 200 OK"
+	run
+	
+	log 3 "$REQUEST_METHOD $REQUEST_URI"
+	log 5 "End process_request"
 }
 
 # The socat process takes input over tcp (or sockets),
 # and sends it to the daemon via two fifo pipes.
 # To keep the socat 'system' call simple, a handler function is called.
 #
-# Note that when socat 'system' call is reading an http request from stdinl,
+# Note that when socat 'system' call is reading an http request from stdin,
 # you need to look at content type and specify exactly how many bytes to read.
 # Otherwise, the read/head/cat/whatever command will hang on stdin, waiting
 # for the client to send more data.
 #
-# Note that the hang-on-stdin doesn't happen when data is received from a
+# Note that the hang-on-stdin is less likely to happen when data is received from a
 # low-level tcp client like nc, ncat, or socat (because they are not http clients).
 #
 # Note that if -t is too small, the pipe will break before 'system' call is finished.
@@ -142,21 +227,26 @@ socat_server(){
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
-		socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
+		#socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
+		#socat -d -t1 -T10 $HF_LISTENER system:'cat - >"$FIFO_INPUT" | cat "$FIFO_OUTPUT"'
+		socat -d -t1 -T10 $HF_LISTENER STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 	} >&105 2>&1  # Othwerwise, socat spits out too much data.
 }
 
 # Handles request from socat server.
+# Expects data to be on stdin.
+# Stdout goes back to request loop and out to client.
 handle_request() {
 	log 5 "Begin handle_request ($$)"
-	local line=''
+	#log 6 '-ls -la /proc/$$/fd'
+	local line="$1"
 	local chr=''
 	while :; do  #[ "$?" == "0" ]; do
 		#chr=$(dd count=1 bs=1 2>/dev/null)
-		IFS= read -rn1 chr
-		echo "Reading request chr: $chr" >&106
+		IFS= read -rn1 chr  #<"$FIFO_INPUT"
+		echo "Read 1 chr from request:$chr" >&106
 		line="$line$chr"
-		log 6 "Choosing handler for request beginning with: $line"
+		log 6 "Choosing handler for request beginning with:$line"
 		if printf '%s' "$line" | grep -qE '^[0-9]+:'; then
 			log 5 "Calling handle_scgi with $line"
 			handle_scgi "$line"
@@ -170,45 +260,49 @@ handle_request() {
 			handle_http "$line"
 			break
 		else
-			log 6 "No handler found yet for request beginning with: $line"
+			log 6 "No handler found yet for request beginning with:$line"
 		fi
 	done
 	log 5 "End handle_request"
-} # Stdout goes back to socat server. Do not redirect.
+} # Stdout should go back to socat server. Do not redirect.
 
 # The handler processes the input from socat and sends it to the daemon via fifo.
 # This accepts and handles http and non-http input containing env code
 #
 handle_http(){
 	log 5 "Begin handle_http/handle_cgi with '$1' ($$)"
+	#log 6 '-ls -la /proc/$$/fd'
 	{
-		local line="x"
+		local line="${1}"
 		local len=0
 
-		read line
+		if [ -z "$line" ]; then
+			read line #< "$FIFO_INPUT"
+		fi
 		log 6 "FIRST-LINE: $line"
 		printf '%s%s\n' "$1" "$line"
 		if printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE)'; then
 		# If this is a valid http request, ingest it as such...
-			log 5 "Reading raw http headers from stdin."
+			log 5 "Reading raw http (or cgi) headers from stdin."
 			printf '%s\n' "$line"
 			while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
-				read line
+				read line #<"$FIFO_INPUT"
 				[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
 				printf '%s\n' "$line"
 			done
 			if [ $(($len)) > 0 ]; then
 				log 6 "Calling 'head' on stdin with -c $len"
-				head -c $(($len))
+				head -c $(($len)) #< "$FIFO_INPUT"
 			fi
 		else # If this is just a list of env vars...
 			log 6 "Calling 'cat' on stdin"
-			cat -
+			cat #"$FIFO_INPUT"
 		fi
 		
 		export -p
 		
-	} | call_daemon_with_fifo
+	# } | call_daemon_with_fifo
+	} | process_request
 	
 	log 5 "End handle_http/handle_cgi"
 } # Stdout goes back to socat server. Do not redirect.
@@ -220,6 +314,7 @@ handle_cgi() { handle_http $*; }
 # This function expects $1 containing the total num of characters in the scgi headers.
 handle_scgi() {
 	log 5 "Begin handle_scgi with '$1' ($$)"
+	#log 6 '-ls -la /proc/$$/fd'
 	{
 		# Arg $1 contains the total length of headers.
 		# Gets all but the last character of $1 (last chr is a ':', which we don't want).
@@ -233,9 +328,12 @@ handle_scgi() {
 			tr '\0' '\n' |
 			sed '$!N;'"s/\n/='/;s/$/'/"
 		)
-		log 6 '-echo "SCGI headers $scgi_headers"'
 		
-		# Extracts CONTENT_LENGTH from scgi_headers and evals it into a var.
+		dd count=1 bs=2 >/dev/null
+		
+		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
+		
+		# Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
 		local content_length_var=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
 		log 6 "Scgi body content length declaration $content_length_var"
 		eval "$content_length_var"
@@ -250,11 +348,13 @@ handle_scgi() {
 		# All stdout from this grouping should go to log.
 	} >&2 #>/tmp/log_103  #>&103
 	
-	# Outputs scgi env and local env to call_daemon_with_fifo.
+	# Outputs scgi env and local env to process_request.
 	{
+		log 5 "Printing scgi_headers and exported env to process_request"
 		printf '%s\n' "$scgi_headers"
 		export -p
-	} | call_daemon_with_fifo
+	# } | call_daemon_with_fifo
+	} | process_request
 	
 	log 5 "End handle_scgi"
 } # Stdout goes back to socat server. Do not redirect.
@@ -281,9 +381,8 @@ evalable_env_from_input() {
 # Evals env returned from simple haserl call.
 eval_haserl_env() {
 	{
-		log 5 "Evaling env with haserl ($$)"
-		log 6 "Sending REQUEST_BODY to haserl:"
-		log 6 '-echo "$REQUEST_BODY"'
+		log 5 "Evaling current env with haserl ($$)"
+		log 6 '-echo "Sending REQUEST_BODY to haserl stdin: $REQUEST_BODY"'
 		haserl_env=$(printf '%s' "$REQUEST_BODY" | haserl "$HASERL_ENV")
 		log 6 '-echo "Haserl env: $haserl_env"'
 		set -a
@@ -292,23 +391,23 @@ eval_haserl_env() {
 	} >&2
 }
 
-# Passes stdin (env list) to daemon via fifo,
-# Receives response via private fifo.
-call_daemon_with_fifo() {
-	log 5 "Sending data as env vars to app daemon with fifo $FIFO_INPUT ($$)"
-	{
-		local fifo_output="${FIFO_OUTPUT}_$$"
-		cat -
-		printf '%s\n' "export FIFO_OUTPUT='$fifo_output'"
-		mkfifo "$fifo_output" >&2 #>/tmp/log_102
-	} >"$FIFO_INPUT"
-	
-	# Receive and cleanup fifo-output.
-	log 5 "Waiting for return data app daemon via fifo $fifo_output"
-	cat "$fifo_output" &&
-	rm -f "$fifo_output" >&2
-	log 5 "Received response from app daemon via fifo $fifo_output"
-}
+# # Passes stdin (env list) to daemon via fifo,
+# # Receives response via private fifo.
+# call_daemon_with_fifo() {
+# 	log 5 "Sending data as env vars to app daemon with fifo $FIFO_INPUT ($$)"
+# 	{
+# 		local fifo_output="${FIFO_OUTPUT}_$$"
+# 		cat -
+# 		printf '%s\n' "export FIFO_OUTPUT='$fifo_output'"
+# 		mkfifo "$fifo_output" >&2 #>/tmp/log_102
+# 	} >"$FIFO_INPUT"
+# 	
+# 	# Receive and cleanup fifo-output.
+# 	log 5 "Waiting for return data app daemon via fifo $fifo_output"
+# 	cat "$fifo_output" &&
+# 	rm -f "$fifo_output" >&2
+# 	log 5 "Received response from app daemon via fifo $fifo_output"
+# }
 
 # Runs the daemon and socat processes in paralell
 start_server() {
@@ -351,7 +450,9 @@ start_server() {
 		sleep 1
 	else
 		#while :; do sleep 60; done
-		daemon_server | socat_server
+		#daemon_server | socat_server
+		#request_loop | socat_server
+		socat_server | request_loop
 	fi
 }
 
