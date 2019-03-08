@@ -40,7 +40,17 @@ export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr,fork}"
 
+# Loads logging.
 . "$HF_DIRNAME/logging.sh"
+
+# Sets up fifo files.
+log 6 'Setting fifo in/out files.'
+rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
+
+# Sets up the haserl template file.
+printf '%s' "<% export -p %>" > "$HASERL_ENV"
 
 #export -p >&2 # TEMP DEBUGGING
 
@@ -131,19 +141,28 @@ handle_trap(){
 
 
 request_loop() {
-	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
-	chmod 600 "$FIFO_INPUT" "$FIFO_OUTPUT"
-	# Sets up the haserl template file.
-	printf '%s' "<% export -p %>" > "$HASERL_ENV"
+	# FIX: There is a race condition somewhere in the loop,
+	# that causes all 1+n requests to hang at the beginning.
+	# The issue that was recently fixed was a couple extra chrs
+	# leftover in the input pipe, clogging up handle_request().
+	# TODO: Improve initial-character read and inspection,
+	# and add a rule to the if/else conditions at beginning
+	# of list handle_request().
+	#   Drop any non-alnum characters at beginning
+	# Don't forget to adjust the temp fix put in place 
+	# at the time of this writing (2019-03-07T01:35:00-PST). (which was...?)
+	exec 0<"$FIFO_INPUT"
 	log 4 "Starting request loop listener ($$)"
 
-	while [ $? -eq 0 ]; do
+	while :; do
 		log 5 "Begin request while-loop"
-		#exec 0<"$FIFO_INPUT"
-		#exec 1>"$FIFO_OUTPUT"
-		handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
-		printf '\r\n\0' >"$FIFO_OUTPUT"
+		
+		#sleep 1
+		
+		exec 1>"$FIFO_OUTPUT"
+		
+		handle_request #| tee "app_output_$(cat /proc/uptime | cut -d ' ' -f1 | tr -d '.')"  #>"$FIFO_OUTPUT"
+		#printf '\n'   #>"$FIFO_OUTPUT"
 		
 		# # Go around again, if fifo is locked.
 		# log 6 "Fifo lock: ${FIFO_LOCK:-<null/unset>}	"
@@ -179,29 +198,36 @@ request_loop() {
 		# 	unset FIFO_LOCK
 		# ) #&
 		# #exec 1<&-; exec 0>&-
+		
+		exec 1>&-
+		sleep 1
 	done
 	log 2 "Leaving request loop listener ($$) exit code ($?)"
+	exec 0<&-
 }
 
 # Parse & eval the request env, and call the framework action(s).
 # Output will be sent back to client.
 process_request() {
-	local input_env="$(cat -)"
 	log 5 "Begin process_request"
-		
-	eval_input_env "$input_env"
-	unset TERMCAP
-	eval_haserl_env
-	log 6 "Calling run() with env: $(env)"
-
-	# TODO: Put a conditional here that controls whether or not
-	# to send the status header. You would only send it, if you
-	# are receiving http requests directly from the client, with
-	# no front-end web server.
-	printf '%s\r\n' "HTTP/1.1 200 OK"
-	run
+	local input_env="$(cat -)"
 	
-	log 3 "$REQUEST_METHOD $REQUEST_URI"
+	( # Everything run within here should be in a subshell to protect the main server process.
+		eval_input_env "$input_env"
+		unset TERMCAP
+		eval_haserl_env
+		log 6 '-echo "Calling run() with env: $(env)"'
+
+		# TODO: Put a conditional here that controls whether or not
+		# to send the status header. You would only send it, if you
+		# are receiving http requests directly from the client, with
+		# no front-end web server.
+		# Should this go in the handle_http funtion?
+		#printf '%s\r\n' "HTTP/1.1 200 OK"
+		run
+		log 3 "$REQUEST_METHOD $REQUEST_URI"
+	)
+	
 	log 5 "End process_request"
 }
 
@@ -222,20 +248,20 @@ process_request() {
 socat_server(){
 	{
 		#echo "Starting socat_server with handler (${1:-<undefined>})" >&2
-		log 4 "Starting socat with HF_LISTENER '$HF_LISTENER' ($$)"
+		log 4 "Starting socat tcp/socket listener with '$HF_LISTENER' ($$)"
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
 		#socat -d -t0.2 -T5 tcp-l:1500,reuseaddr,fork exec:"${HF_SERVER} handle ${1:-scgi}"
 		#socat -d -t1 -T5 $HF_LISTENER exec:"${HF_SERVER} handle"
 		#socat -d -t1 -T10 $HF_LISTENER system:'cat - >"$FIFO_INPUT" | cat "$FIFO_OUTPUT"'
-		socat -d -t1 -T10 $HF_LISTENER STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		socat -d -t1 -T5 $HF_LISTENER STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 	} >&105 2>&1  # Othwerwise, socat spits out too much data.
 }
 
 # Handles request from socat server.
 # Expects data to be on stdin.
-# Stdout goes back to request loop and out to client.
+# Stdout goes out stdout, back to request loop, then out to client.
 handle_request() {
 	log 5 "Begin handle_request ($$)"
 	#log 6 '-ls -la /proc/$$/fd'
@@ -243,7 +269,7 @@ handle_request() {
 	local chr=''
 	while :; do  #[ "$?" == "0" ]; do
 		#chr=$(dd count=1 bs=1 2>/dev/null)
-		IFS= read -rn1 chr  #<"$FIFO_INPUT"
+		IFS= read -rn1 chr
 		echo "Read 1 chr from request:$chr" >&106
 		line="$line$chr"
 		log 6 "Choosing handler for request beginning with:$line"
@@ -310,7 +336,8 @@ handle_http(){
 #alias handle_cgi='handle_http()'
 handle_cgi() { handle_http $*; }
 
-# Accepts and parses SCGI input, and sends it to call_daemon_with_fifo.
+# Accepts and parses SCGI input on stdin, and sends it to process_request.
+# Respons from process_request is returned on stdout to upstream handle_request.
 # This function expects $1 containing the total num of characters in the scgi headers.
 handle_scgi() {
 	log 5 "Begin handle_scgi with '$1' ($$)"
@@ -329,7 +356,10 @@ handle_scgi() {
 			sed '$!N;'"s/\n/='/;s/$/'/"
 		)
 		
-		dd count=1 bs=2 >/dev/null
+		# Drops the last 2 chrs from stdin (I think they were ' ,')
+		# TODO: Is the request body being damaged by this?
+		# TODO: Find a less hacky place/way to do this.
+		dd count=1 bs=2 >/dev/null 2>&1
 		
 		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
 		
@@ -349,11 +379,10 @@ handle_scgi() {
 	} >&2 #>/tmp/log_103  #>&103
 	
 	# Outputs scgi env and local env to process_request.
+	log 5 "Printing scgi_headers and exported env to process_request"
 	{
-		log 5 "Printing scgi_headers and exported env to process_request"
 		printf '%s\n' "$scgi_headers"
 		export -p
-	# } | call_daemon_with_fifo
 	} | process_request
 	
 	log 5 "End handle_scgi"
@@ -365,7 +394,7 @@ handle_scgi() {
 eval_input_env() {
 	log 5 "Evaling input env vars ($$)"
 	{
-		evalable_input=$(evalable_env_from_input "$1")
+		local evalable_input=$(evalable_env_from_input "$1")
 		set -a
 		eval "$evalable_input"
 		set +a
