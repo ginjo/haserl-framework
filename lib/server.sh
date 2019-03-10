@@ -168,7 +168,7 @@ socat_server(){
 		
 		# Loops with non-forking socat and uniq per-request single fifo file. This also works well.
 		# This does not require the request_loop function (since this IS the request loop here).
-		while :; do
+		while [ $? == 0 ]; do
 			(
 			local loop_id=$(sspid)
 			local fifo="/tmp/hf_fifo_$loop_id"
@@ -496,7 +496,7 @@ start_server() {
 	#log 5 "PID $$"
 	#log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
 	#echo "Test stderr... >&2" >&2
-	if [ "$1" == 'console' -o "$HF_CONSOLE" == 'true' ]; then
+	if [ "$1" == 'console' ]; then
 		while :; do IFS= read -r line; eval "$line"; done
 	elif [ "$1" == 'daemon' ]; then
 		#( while :; do sleep 60; done ) 0</dev/null 1>&0 2>&0 &
@@ -509,14 +509,15 @@ start_server() {
 		# 	daemon_server | socat_server
 		# ) >/dev/null 2>&1 0<&- &
 		
-		exec 0</dev/null
 		exec 22>daemon.log
 		
-		(daemon_server | socat_server) &
+		( socat_server | request_loop ) 22>daemon.log &
 		
-		# TRY THIS:
-		(echo "$$" > "$PID_FILE"; kill -STOP $$; kill -CONT $$) &
-		sleep 1
+		#socat_server | request_loop
+		
+		# TRY THIS. It puts the current process in the background.
+		# (echo "$$" > "$PID_FILE"; kill -STOP $$; kill -CONT $$) &
+		# sleep 1
 	else
 		#while :; do sleep 60; done
 		#daemon_server | socat_server
