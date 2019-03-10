@@ -55,12 +55,14 @@ timer() {
 cleanup_logging() {
 	echo "Running cleanup_logging"
 	for x in $LOG_LEVELS ; do
+		{
 		eval "exec 10$x>&-"
 		rm -f /tmp/log_10$x
+		} >/dev/null
 	done
 	#exec 22>&-
 	unset LOGGING_IS_SETUP
-}
+} >&22 2>&1
 
 # # Routes stderr through the log function.
 # # See the other component of this below
