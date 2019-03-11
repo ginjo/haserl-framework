@@ -44,39 +44,29 @@ export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
 export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
-export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr,fork}"
+export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr}"
 export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t10 -T60}"
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
 
-# Sets up fifo files.
-log 6 'Setting fifo in/out files.'
-rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
-rm -f /tmp/hf_fifo*
+# # See initialize() function below.
+# #
+# # Sets up fifo files.
+# log 6 'Setting fifo in/out files.'
+# rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+# rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+# mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
+# rm -f /tmp/hf_fifo*
+# 
+# # Sets up the haserl template file.
+# printf '%s' "<% export -p %>" > "$HASERL_ENV"
+# 
+# #export -p >&2 # TEMP DEBUGGING
+# 
+# # See this for signal listing - https://unix.stackexchange.com/questions/317492/list-of-kill-signals
+# trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
 
-# Sets up the haserl template file.
-printf '%s' "<% export -p %>" > "$HASERL_ENV"
-
-#export -p >&2 # TEMP DEBUGGING
-
-# See this for signal listing - https://unix.stackexchange.com/questions/317492/list-of-kill-signals
-trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
-
-# Handles cleanup when the application quits.
-handle_trap(){
-	#log 5 "Running handle_trap for $(get_pids)"
-	printf '%s\n' "Running handle_trap for $(get_pids)" 
-	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output" /tmp/hf_fifo*
-	#kill -9 $sd
-	#kill -15 -$$
-	#kill -15 -"$(cat $PID_FILE)"
-	rm -f "$PID_FILE"
-	printf '\n%s\n' "Goodbye!"
-	kill -15 -$$
-} >&22
 
 # Simple daemon paired with socat tcp interface.
 # Note that the fifo input and fifo output need to be two separate commands,
@@ -164,7 +154,7 @@ socat_server(){
 		#socat -d -t10 tcp-l:1500,reuseaddr,fork STDIO <"$FIFO_INPUT" | handle_request >"$FIFO_INPUT"
 		
 		# Forking socat with dual fifo files to/from request_loop. This works well.
-		#socat $HF_LISTENER_OPTS $HF_LISTENER STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		#socat $HF_LISTENER_OPTS $HF_LISTENER,fork STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 		
 		# Loops with non-forking socat and uniq per-request single fifo file. This also works well.
 		# This does not require the request_loop function (since this IS the request loop here).
@@ -180,8 +170,11 @@ socat_server(){
 			# At the time of this writing, it does not seem to make any difference here,
 			# however the app is working correctly here (and very quickly, using scgi).
 			# See the above URL re pipeline alligators.
-			socat -d -t10 tcp-l:1500,reuseaddr STDIO <"$fifo" | handle_request >"$fifo"
-			#{ socat -d -t10 tcp-l:1500,reuseaddr STDIO <"$fifo" && exec 1>&- ; } | handle_request >"$fifo"
+			socat $HF_LISTENER_OPTS $HF_LISTENER STDIO <"$fifo" | handle_request >"$fifo"
+			if [ $? != 0 ]; then
+				log 3 "Socat failed with exit code '$?'"
+			fi
+			# { socat -d -t10 tcp-l:1500,reuseaddr STDIO <"$fifo" && exec 1>&- ; } | handle_request >"$fifo"
 			rm -f "$fifo"
 			log 5 "Finished socat listener loop ($loop_id)"
 			)
@@ -483,7 +476,7 @@ start_server() {
 	#echo "$(date -Iseconds) Running the Haserl Framework Server v0.0.1"
 	# Spawn a subshell, otherwise we'll kill the main shell.
 	# TODO: Consider using start-stop-daemon.
-	#echo "$$" > "$PID_FILE"
+	echo "$$" > "$PID_FILE"
 	log 4 'Starting HF server'
 	# Note the 5th field in /proc/<pid>/stat is the pgid.
 	
@@ -496,28 +489,26 @@ start_server() {
 	#log 5 "PID $$"
 	#log 5 "FD's for pid $$ $(ls -l /proc/$$/fd/ | awk '{print $9,$10,$11}')"
 	#echo "Test stderr... >&2" >&2
+	
 	if [ "$1" == 'console' ]; then
 		while :; do IFS= read -r line; eval "$line"; done
 	elif [ "$1" == 'daemon' ]; then
-		#( while :; do sleep 60; done ) 0</dev/null 1>&0 2>&0 &
 		
-		# (
-		# 	echo "$$" > "$PID_FILE"
-		# 	exec 0<&-
-		# 	exec 1>/dev/null
-		# 	exec 2>&1
-		# 	daemon_server | socat_server
-		# ) >/dev/null 2>&1 0<&- &
+		# Manually, you can do this, from the command line:
+		# (LOG_LEVEL=3 ./app.sh 0</dev/null 1>daemon.log 2>&1) &
 		
-		exec 22>daemon.log
+		# But the rest of this doesn't work yet: Can't seem to detach output from terminal.
 		
-		( socat_server | request_loop ) 22>daemon.log &
-		
-		#socat_server | request_loop
-		
+		#( socat_server | request_loop ) 22>>daemon.log 1>&22 2>&22 &
+				
 		# TRY THIS. It puts the current process in the background.
-		# (echo "$$" > "$PID_FILE"; kill -STOP $$; kill -CONT $$) &
-		# sleep 1
+		(kill -STOP $$; kill -CONT $$) >/dev/null 2>&1 &
+		sleep 1
+		
+		1>&22
+		exec 0<&-
+		
+		( socat_server | request_loop )
 	else
 		#while :; do sleep 60; done
 		#daemon_server | socat_server
@@ -531,23 +522,59 @@ stop_server() {
 	kill -15 -"$(cat $PID_FILE)"
 }
 
-# Handles runtime/startup command processing
-log 5 "Running server case statement with args: $@"
-case $1 in
-	"start")
-		start_server $2
-		;;
-	"stop")
-		stop_server $2
-		;;
-	"handle")
-		handle_request $2
-		;;
-	"console")
-		start_server 'console'
-		;;
-	"daemon")
-		start_server 'daemon'
-		;;
-esac
+initialize() {
+	# Sets up fifo files.
+	log 6 'Setting fifo in/out files.'
+	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
+	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
+	rm -f /tmp/hf_fifo*
+
+	# Sets up the haserl template file.
+	printf '%s' "<% export -p %>" > "$HASERL_ENV"
+
+	#export -p >&2 # TEMP DEBUGGING
+	
+	export HF_SERVER_INITIALIZED=true
+}
+
+# See this for signal listing - https://unix.stackexchange.com/questions/317492/list-of-kill-signals
+trap 'cleanup_logging; handle_trap' 1 2 3 4 6   #15
+
+# Handles cleanup when the application quits.
+handle_trap(){
+	echo "Running handle_trap for $(get_pids)"
+	printf '%s\n' "Running handle_trap for $(get_pids)" 
+	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output" /tmp/hf_fifo*
+	rm -f "$PID_FILE"
+	printf '\n%s\n' "Goodbye!"
+	kill -15 -$$
+} >&22
+
+initialize
+
+#( $* )
+
+# # Going to get rid of this. Nothing wrong with it, just trying to simplify.
+# # Handles runtime/startup command processing
+# case $1 in
+# 	"start")
+# 		initialize && start_server $2
+# 		;;
+# 	"stop")
+# 		stop_server $2
+# 		;;
+# 	# "handle")
+# 	# 	handle_request $2
+# 	# 	;;
+# 	# "console")
+# 	# 	start_server 'console'
+# 	# 	;;
+# 	# "daemon")
+# 	# 	start_server 'daemon'
+# 	# 	;;
+# 	*) # else
+# 		initialize &*
+# 		;;
+# esac
 
