@@ -15,7 +15,7 @@
 export LOG_FILE=${LOG_FILE:=&2}
 export LOG_LABLE=${LOG_LABLE:=HF}
 export LOG_LEVEL=${LOG_LEVEL:=3}
-export LOG_LEVELS='1 2 3 4 5 6'
+export LOG_LEVELS=$(seq -s ' ' 1 6)
 export LOG_LEVEL_NAMES='fatal error warn info debug trace'
 
 # # Routes stderr through the log function.
@@ -37,7 +37,7 @@ log() {
 			if [ $LOG_LEVEL -ge 5 ]; then
 			  more_log_data="logpid ${$}$(timer ' ')"
 			fi
-			printf '%s : ' "$(date -Iseconds) $more_log_data $LOG_LABLE ($level)" | sed 's/ \+/ /g'
+			printf '%s : ' "$(date -Iseconds) $more_log_data $LOG_LABLE [$(log_level_name $level)]" | sed 's/ \+/ /g'
 			if [ ! -z "$cmd" ]; then				
 				eval "${cmd/-/}"
 			elif [ ! -z "$str" ]; then
@@ -51,6 +51,16 @@ log() {
 
 timer() {
 	read up rest </proc/uptime; printf '%s' "$1$up"
+}
+
+# Expects <n> <string>
+nth_word() {
+	echo "$2" | cut -d ' ' -f "$1"
+}
+
+# Expects log level n
+log_level_name() {
+	nth_word "$1" "$LOG_LEVEL_NAMES" | awk '{ print toupper($0) }'
 }
 
 cleanup_logging() {

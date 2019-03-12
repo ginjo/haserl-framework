@@ -154,31 +154,32 @@ socat_server(){
 		#socat -d -t10 tcp-l:1500,reuseaddr,fork STDIO <"$FIFO_INPUT" | handle_request >"$FIFO_INPUT"
 		
 		# Forking socat with dual fifo files to/from request_loop. This works well.
-		#socat $HF_LISTENER_OPTS $HF_LISTENER,fork STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		socat $HF_LISTENER_OPTS $HF_LISTENER,fork STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 		
-		# Loops with non-forking socat and uniq per-request single fifo file. This also works well.
-		# This does not require the request_loop function (since this IS the request loop here).
-		while [ $? == 0 ]; do
-			(
-			local loop_id=$(sspid)
-			local fifo="/tmp/hf_fifo_$loop_id"
-			rm -f "$fifo"
-			mkfifo "$fifo"
-			while [ ! -p "$fifo" ]; do echo "Waiting for fifo $fifo" >/tmp/log_103; done
-			log 5 "Beginning socat listener loop with ($loop_id)"
-			# The stdin-closing is experimental attempt to get the EOF back the client more reliably.
-			# At the time of this writing, it does not seem to make any difference here,
-			# however the app is working correctly here (and very quickly, using scgi).
-			# See the above URL re pipeline alligators.
-			socat $HF_LISTENER_OPTS $HF_LISTENER STDIO <"$fifo" | handle_request >"$fifo"
-			if [ $? != 0 ]; then
-				log 3 "Socat failed with exit code '$?'"
-			fi
-			# { socat -d -t10 tcp-l:1500,reuseaddr STDIO <"$fifo" && exec 1>&- ; } | handle_request >"$fifo"
-			rm -f "$fifo"
-			log 5 "Finished socat listener loop ($loop_id)"
-			)
-		done
+		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
+		# # This does not require the request_loop function (since this IS the request loop here).
+		# while [ $? == 0 ]; do
+		# 	(
+		# 	local loop_id=$(sspid)
+		# 	local fifo="/tmp/hf_fifo_$loop_id"
+		# 	rm -f "$fifo"
+		# 	mkfifo "$fifo"
+		# 	while [ ! -p "$fifo" ]; do echo "Waiting for fifo $fifo" >/tmp/log_103; done
+		# 	log 5 "Beginning socat listener loop with ($loop_id)"
+		# 	# The stdin-closing is experimental attempt to get the EOF back the client more reliably.
+		# 	# At the time of this writing, it does not seem to make any difference here,
+		# 	# however the app is working correctly here (and very quickly, using scgi).
+		# 	# See the above URL re pipeline alligators.
+		# 	socat $HF_LISTENER_OPTS $HF_LISTENER STDIO <"$fifo" | handle_request >"$fifo"
+		# 	if [ $? != 0 ]; then
+		# 		log 3 "Socat failed with exit code '$?'"
+		# 	fi
+		# 	# { socat -d -t10 tcp-l:1500,reuseaddr STDIO <"$fifo" && exec 1>&- ; } | handle_request >"$fifo"
+		# 	rm -f "$fifo"
+		# 	log 5 "Finished socat listener loop ($loop_id)"
+		# 	)
+		# done
+		
 	} >&103 2>&1  # Othwerwise, socat spits out too much data.
 }
 
@@ -193,7 +194,7 @@ request_loop() {
 	#   Drop any non-alnum characters at beginning
 	# Don't forget to adjust the temp fix put in place 
 	# at the time of this writing (2019-03-07T01:35:00-PST). (which was...?)
-	#exec 0<"$FIFO_INPUT"
+	exec 0<"$FIFO_INPUT"
 	log 4 "Starting request loop listener ($(get_pids))"
 
 	while :; do
@@ -204,7 +205,8 @@ request_loop() {
 		  # in a subshell, if it's running as the last part of a pipe. Check all your pipes.
 			#exec 1>"$FIFO_OUTPUT"
 		
-			handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
+			#handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
+			handle_request >"$FIFO_OUTPUT"
 			
 			# I thought stdout had to be closed for the cycle to complete correctly,
 			# but now that does not appear to be the case.
@@ -218,7 +220,7 @@ request_loop() {
 		log 5 "End request while-loop"
 	done
 	log 2 "Leaving request loop listener ($(get_pids)) exit code ($?)"
-	#exec 0<&-
+	exec 0<&-
 }
 
 # Handles request from socat server.
@@ -348,16 +350,20 @@ handle_scgi() {
 		)
 		
 		# Drops the last 2 chrs from stdin (I think they were ' ,')
-		# TODO: Is the request body being damaged by this?
+		# TODO: Is the request body being damaged by this? YES!
 		# TODO: Find a less hacky place/way to do this.
-		dd count=1 bs=2 >/dev/null 2>&106
+		#dd count=1 bs=2 >/dev/null 2>&106
+		# There is still a comma being left over. Try dropping it.
+		# This works, but...
+		# TODO: Make sure this works with POST containing body text.
+		log 6 "Dropping last chr from scgi headers input '$(dd count=1 bs=1 2>/dev/null)'"
 		
 		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
 		
 		# Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
-		local content_length_var=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
-		log 6 "Scgi body content length declaration $content_length_var"
-		eval "$content_length_var"
+		local content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
+		log 6 "Scgi body content length declaration $content_length_header"
+		eval "$content_length_header"
 	
 		# Gets remaining stdin containing request body, if exists.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
@@ -421,8 +427,9 @@ eval_input_env() {
 	} >&2
 }
 
-# Returns evalable env code from stdin.
-# Expects input string on $1 (This may be changin to stdin).
+# Filters evalable env code from stdin (var='anything-but-single-quote').
+# Does no modification of string.
+# Expects input string on stdin to be output from 'env' or 'export -p'.
 evalable_env_from_input() {
 	#echo "$1" | sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 	sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
@@ -440,6 +447,18 @@ eval_haserl_env() {
 		eval "$haserl_env"
 		set +a
 	} >&2
+}
+
+# Filters fifo-input env string, so it can be eval'd safely.
+# Is intended to take output from 'env' and make it more like 'export -p'.
+#   Escapes single-quotes first.
+#   Adds a quote after '=' to any line that doesn't begin with a space or tab.
+#   Adds a quote at end of any line that doesn't end with '\'.
+# Taken from framework 'get_safe_fifo_input'
+# Can take data on $1 or stdin
+sanitize_var_declaration() {
+	if [ -z "$1" ]; then cat; else echo "$1"; fi |
+  sed "s/'/'\\\''/g; /^[^ \t]/{s/=/='/}; /[^\\]$/{s/$/'/}"
 }
 
 # Prints pids (current, parent, subshell). Show header row if $1 == true.
@@ -548,7 +567,7 @@ handle_trap(){
 	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output" /tmp/hf_fifo*
 	rm -f "$PID_FILE"
 	printf '\n%s\n' "Goodbye!"
-	kill -15 -$$
+	kill -9 -$$
 } >&22
 
 initialize

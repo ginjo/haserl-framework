@@ -85,6 +85,7 @@ content_type() {
 redirect() {
   location="$1"
   status="${2:-307 Temporary}"
+	log 5 "Redirecting  to $location, with status $status"
   printf '%s\r\n' "Status: $status"
   printf '%s\r\n' "Location: $location"
   printf '%s\r\n'
@@ -272,7 +273,7 @@ setup() {
 #
 run() {
   { 
-		# Experimental rewrite PATH_INFO if '/'
+		# Experimental set PATH_INFO to '/' under certain circumstances.
 		if [ "$REQUEST_URI" = "$SCRIPT_NAME/" ]; then
 			export PATH_INFO='/'
 		fi
@@ -291,10 +292,11 @@ run() {
       eval "local code=\$action_code_$i"
       eval "local method=\$action_method_$i"
       #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
-		if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
+			if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
         run_before
         #echo "Test-error from just before (eval 'code') within run() function." >&2
-				if [ -z "$redirected" ]; then
+				if [ -z "$redirected" -a $? = 0 ]; then
+					log 6 "Running action with match ($match) method ($method) code ($code)"
 	        eval "$code" #2>>haserl_framework.log
 	        printf '\r\n'
 				fi
@@ -317,6 +319,8 @@ run() {
 
 run_before() {
   if [ ! -z "$run_before" ]; then
+		log 5 "Running 'before' actions"
+		log 6 "Before actions to run: $run_before"
     #printf 'RUN_BEFORE:\n%s\nEND_RUN_BEFORE\n' "$run_before" >&2
     eval "$run_before"
   fi
@@ -324,6 +328,8 @@ run_before() {
 
 run_after() {
   if [ ! -z "$run_after" ]; then
+		log 5 "Running 'after' actions"
+		log 6 "After actions to run: $run_after"
     #printf 'RUN_AFTER:\n%s\nEND_RUN_AFTER\n' "$run_after" >&2
     eval "$run_after"
   fi
@@ -340,6 +346,7 @@ headers() {
 }
 
 # Filters fifo-input env string, so it can be eval'd safely.
+# Is intended to take output from 'env' and make it more like 'export -p'.
 #   Escapes single-quotes first.
 #   Adds a quote after '=' to any line that doesn't begin with a space or tab.
 #   Adds a quote at end of any line that doesn't end with '\'.
@@ -396,36 +403,6 @@ match_url() {  # <url> <matcher>
 		#eval "PARAM_${x}="'${result}'
 		eval "PARAM_${x}=\""'${result}'\"
 	done
-}
-
-
-##### Experimentatl Socat Server #####
-
-prepare_run(){
-	env >&2
-  set -a
-	# Evals env-export input from haserl-cgi script, skipping lines with non-valid var names.	
-	while IFS= read -r -t1 line; do
-		#eval "$(printf '%s' $line | sed -ne '/^export [[:alnum:]_]\+=/p')"
-		line=$(printf '%s' "$line" | sed -ne '/^export [[:alnum:]_]\+=/p')
-		#echo "LINE: $line" >&2
-		eval "$line"
-	done
-  unset TERMCAP
-  set +a
-	printf '%s\n' "Running process: $0" >&2
-  printf '%s\n' "$(date -Iseconds) $REQUEST_METHOD $REQUEST_URI" >&2
-	# The tee allows you to stuff all page responses into a file.
-  #run | tee "$FIFO_OUTPUT" > /dev/null  #/tmp/haserl_page_output.html
-	#run > "$FIFO_OUTPUT"
-}
-
-server_socat() {
-	#socat -t0.5 tcp4-listen:1500,reuseaddr,fork,crlf system:". $framework && prepare_run && run | tee haserl_socat.log",nofork
-	server &
-	sleep 1
-	#socat -v -t0.5 tcp4-listen:1500,reuseaddr,fork PIPE:"$FIFO_INPUT"
-	eval "$(set| tr '\n' ' ') socat -t0.5 tcp-listen:1500,reuseaddr,fork PIPE:'$FIFO_INPUT'"
 }
 
 
