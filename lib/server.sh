@@ -208,11 +208,9 @@ request_loop() {
 	# Don't forget to adjust the temp fix put in place 
 	# at the time of this writing (2019-03-07T01:35:00-PST). (which was...?)
 	exec 0<"$FIFO_INPUT"
-	#exec 1>"$FIFO_OUTPUT"
 	log 4 "Starting request loop listener ($(get_pids))"
 
 	while :; do
-		#exec 0<"$FIFO_INPUT"
 		log 5 "Begin request loop"
 		
 		( # This is where the request is currently subshelled, to protect the main server env.
@@ -232,32 +230,24 @@ request_loop() {
 			# Manually opens stdout to fifo.
 			#exec 1>"$FIFO_OUTPUT"
 			
-			#local subshell_pid=$(sh -c 'echo $PPID')
-			#log 5 "Subshell FDs ($subshell_pid) before req: $(ls -l /proc/$subshell_pid/fd/)"
-
-			#handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
 			handle_request "$chr" #>"$FIFO_OUTPUT"
 			# Not clear if this EOF helps or not.
 			printf '\0' #>"$FIFO_OUTPUT"
-		
-			#log 5 "Subshell FDs ($subshell_pid) after req: $(ls -l /proc/$subshell_pid/fd/)"
-			
-			# Manually closes stdio to fifo.
+					
+			# Manually closes stdout to fifo.
 			#exec 1>&-
 		
 			# The pause is needed to keep a race condition from happening,
 			# when the loop begins again to quickly. Hasn't been needed in awhile.
 			#sleep 1
-			
+
 		) >"$FIFO_OUTPUT"
 		log 5 "End request loop"
-		#exec 1>&-
-		#exec 0<&-
 	done
 	log 2 "Leaving request loop listener ($(get_pids)) exit code ($?)"
 	
-	# Just to be safe, cleanup.
-	#exec 1>&-
+	# Just to be safe, cleanup if the loop breaks or ends.
+	exec 1>&-
 	exec 0<&-
 }
 
