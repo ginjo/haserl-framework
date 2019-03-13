@@ -45,7 +45,7 @@ export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr}"
-export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t10 -T60}"
+export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -T60}"
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -140,11 +140,20 @@ export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t10 -T60}"
 # low-level tcp client like nc, ncat, or socat (because they are not http clients).
 #
 # Note that if -t is too small, the pipe will break before 'system' call is finished.
+# Since we don't use the 'system' style any more, this might be irrelevant.
+#
+# NOTE: that -t should be large (-t10) if using cgi interface with nc, or responses will be cut short.
+# This does not appear to be an issue if using cgi with direct piping to fifo files.
+#
+# NOTE: that -t should be small (-t0.2) if using scgi interface, or redirects will take forever.
+#
+# Socat default for -t (wait for other channel) is 0.5s. For -T (innactivity timeout) is never.
+# See env vars above for HF defaults.
 #
 socat_server(){
 	{
 		#echo "Starting socat_server with handler (${1:-<undefined>})" >&2
-		log 4 "Starting socat tcp/socket listener with '$HF_LISTENER' ($(get_pids))"
+		log 4 "Starting socat tcp/socket listener ($(get_pids))"
 		#socat -t5 tcp-l:1500,reuseaddr,fork system:". socat_server.sh && handle_http",nonblock=1    #,end-close
 		# TODO: Allow server startup command to pass socat options and 1st addr to this command.
 		#socat -d -t1 -T5 tcp-l:1500,reuseaddr,fork system:". ${HF_DIRNAME}/server.sh && handle_${1:-cgi}",nofork
@@ -154,7 +163,11 @@ socat_server(){
 		#socat -d -t10 tcp-l:1500,reuseaddr,fork STDIO <"$FIFO_INPUT" | handle_request >"$FIFO_INPUT"
 		
 		# Forking socat with dual fifo files to/from request_loop. This works well.
-		socat $HF_LISTENER_OPTS $HF_LISTENER,fork STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		# The shut-null on addr1, combined with subshelling the handle_request call, is necessary
+		# for redirects to work properly with this style of socat (forking with STDIO).
+		# The shut-null on addr2 is experimental. The null-eof's are both experimental.
+		# The keepalive doesn't seem to help redirects use keepalive.
+		socat $HF_LISTENER_OPTS $HF_LISTENER,fork,shut-null,null-eof,keepalive STDIO,shut-null,null-eof 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 		
 		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
 		# # This does not require the request_loop function (since this IS the request loop here).
@@ -180,7 +193,7 @@ socat_server(){
 		# 	)
 		# done
 		
-	} >&103 2>&1  # Othwerwise, socat spits out too much data.
+	} >&103 2>&22  # Othwerwise, socat spits out too much data.
 }
 
 request_loop() {
@@ -195,31 +208,56 @@ request_loop() {
 	# Don't forget to adjust the temp fix put in place 
 	# at the time of this writing (2019-03-07T01:35:00-PST). (which was...?)
 	exec 0<"$FIFO_INPUT"
+	#exec 1>"$FIFO_OUTPUT"
 	log 4 "Starting request loop listener ($(get_pids))"
 
 	while :; do
-		log 5 "Begin request while-loop"
+		#exec 0<"$FIFO_INPUT"
+		log 5 "Begin request loop"
 		
-		#( # This is where the request is currently subshelled, to protect the main server env.
+		( # This is where the request is currently subshelled, to protect the main server env.
 		  # It may not be necessary to subshell, however, since the entire script-run may be
 		  # in a subshell, if it's running as the last part of a pipe. Check all your pipes.
-			#exec 1>"$FIFO_OUTPUT"
-		
-			#handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
-			handle_request >"$FIFO_OUTPUT"
+			# NOTE: This subshelling appears to be really IMPORTANT for redirected requests to work,
+			# when using the forking socat with STDIO. Also see the socat options necessary,
+			# like short '-t' and shut-null on addr1
 			
-			# I thought stdout had to be closed for the cycle to complete correctly,
-			# but now that does not appear to be the case.
+			# Provides gating so upstream processes aren't started unnecessarily.
+			# TODO: Try moving this outside the subshell again, and open stdout at beginning of 'while'
+			# Then see if you can background the subshell.
+			log 5 "Waiting for request on $FIFO_INPUT"
+			IFS= read -rn1 chr
+			log 5 "Read '$chr' from $FIFO_INPUT, sending control to handle_request"
+			
+			# Manually opens stdout to fifo.
+			#exec 1>"$FIFO_OUTPUT"
+			
+			#local subshell_pid=$(sh -c 'echo $PPID')
+			#log 5 "Subshell FDs ($subshell_pid) before req: $(ls -l /proc/$subshell_pid/fd/)"
+
+			#handle_request <"$FIFO_INPUT" >"$FIFO_OUTPUT"
+			handle_request "$chr" #>"$FIFO_OUTPUT"
+			# Not clear if this EOF helps or not.
+			printf '\0' #>"$FIFO_OUTPUT"
+		
+			#log 5 "Subshell FDs ($subshell_pid) after req: $(ls -l /proc/$subshell_pid/fd/)"
+			
+			# Manually closes stdio to fifo.
 			#exec 1>&-
 		
 			# The pause is needed to keep a race condition from happening,
-			# when the loop begins again to quickly.
+			# when the loop begins again to quickly. Hasn't been needed in awhile.
 			#sleep 1
 			
-		#) <"$FIFO_INPUT" >"$FIFO_OUTPUT"
-		log 5 "End request while-loop"
+		) >"$FIFO_OUTPUT"
+		log 5 "End request loop"
+		#exec 1>&-
+		#exec 0<&-
 	done
 	log 2 "Leaving request loop listener ($(get_pids)) exit code ($?)"
+	
+	# Just to be safe, cleanup.
+	#exec 1>&-
 	exec 0<&-
 }
 
@@ -340,7 +378,7 @@ handle_scgi() {
 		# Gets all but the last character of $1 (last chr is a ':', which we don't want).
 		local len="${1:0:$((${#1}-1))}"
 		
-		log 5 "Reading $len characters of scgi input."
+		log 5 "Reading $len characters of scgi input"
 	
 		# Reads header length, reads headers, translates into env var code.
 		local scgi_headers=$(

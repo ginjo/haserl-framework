@@ -88,6 +88,7 @@ redirect() {
 	log 5 "Redirecting  to $location, with status $status"
   printf '%s\r\n' "Status: $status"
   printf '%s\r\n' "Location: $location"
+	printf '%s\r\n' "Connection: KeepAlive"
   printf '%s\r\n'
 	export redirected="$location"
 }

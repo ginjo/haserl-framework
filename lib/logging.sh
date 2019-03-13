@@ -60,7 +60,8 @@ nth_word() {
 
 # Expects log level n
 log_level_name() {
-	nth_word "$1" "$LOG_LEVEL_NAMES" | awk '{ print toupper($0) }'
+	#nth_word "$1" "$LOG_LEVEL_NAMES" | awk '{ print toupper($0) }'
+	nth_word "$1" "$LOG_LEVEL_NAMES" | tr '[a-z]' '[A-Z]'
 }
 
 cleanup_logging() {
