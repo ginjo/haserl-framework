@@ -45,7 +45,8 @@ export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr}"
-export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t0.2 -T60}"
+#export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t5 -T60}"
+export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -T60}"
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -90,7 +91,8 @@ socat_server(){
 		# for redirects to work properly with this style of socat (forking with STDIO).
 		# The shut-null on addr2 is experimental. The null-eof's are both experimental.
 		# The keepalive doesn't seem to help redirects use keepalive.
-		socat $HF_LISTENER_OPTS $HF_LISTENER,fork,shut-null,null-eof,keepalive STDIO,shut-null,null-eof 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		#socat $HF_LISTENER_OPTS $HF_LISTENER,fork,shut-null,null-eof,keepalive STDIO,shut-null,null-eof 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		socat $HF_LISTENER_OPTS $HF_LISTENER,fork,keepalive STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 		
 		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
 		# # This does not require the request_loop function (since this IS the request loop here).
