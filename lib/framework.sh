@@ -36,6 +36,7 @@ set -a
 ##### User Functions #####
 
 before() {
+	log 5 "Defining 'before' function"
   local code="$(cat -)"
   # Note that command-substitution $() strips ending newlines,
   # thus the EEOOLL and the subsequent brace-expansion to remove EEOOLL,
@@ -46,6 +47,7 @@ before() {
 }
 
 after() {
+	log 5 "Defining 'after' function"
   local code="$(cat -)"
   run_after=$(printf '%s%s\n\nEEOOLL' "$run_after" "$code")
   run_after="${run_after%EEOOLL}"
@@ -55,6 +57,7 @@ route() {
   local match="$1"
   local method="$2"
   local code="$(cat -)"
+	log 5 '-echo "Defining route $match $method"'
   #set -a
   
   eval "action_match_$action_index='$match'"
@@ -69,12 +72,14 @@ route() {
 
 # Sets a new line in headers.
 header() {
+	log 6 "Setting header $1"
   export headers=$(printf '%s\r\nEEOOLL' "$headers$1")
   headers="${headers%EEOOLL}"
 }
 
 content_type() {
   export content_type="$1"
+	log 6 '-echo "Set content type to $content_type"'
 }
 
 # Redirects request.
@@ -85,7 +90,7 @@ content_type() {
 redirect() {
   location="$1"
   status="${2:-307 Temporary}"
-	log 5 "Redirecting  to $location, with status $status"
+	log 5 '-echo "Redirecting  to $location, with status $status"'
   printf '%s\r\n' "Status: $status"
   printf '%s\r\n' "Location: $location"
 	printf '%s\r\n' "Connection: KeepAlive"
@@ -97,12 +102,9 @@ redirect() {
 # Usage: render <view> <layout>
 #render info layout
 render() {
-  #echo "Calling render with env:" >&2
-  #env  >&2
-  #echo "Test-error from render() function, arg1=$1, arg2=$2" >&2
-  
   # Fork stubshell for each render() function, so current template,
   # which must be global, doesn't get confused when calling sub-render functions.
+	# TODO: Is this subshelling still necessary with new architecture.
   (
     if [ ! -z "$1" ]; then
       export template="${1}"
@@ -110,19 +112,22 @@ render() {
   
     local layout="${2}"
 
+		log 5 '-echo "Rendering with $template $layout"'
+
     if [ ! -z "$layout" ]; then
       #export top_level_template="$template"
       headers
-      #echo "Calling haserl layout with '$APPDIR/views/$layout'" >&2
+      log 5 '-echo "Calling haserl layout with $APPDIR/views/$layout"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$layout"
     else
-      #echo "Calling haserl view with '$APPDIR/views/$template'" >&2
+      log 5 '-echo "Calling haserl view with $APPDIR/views/$template"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$template"
     fi
   )
 }
 
 yield() {
+	log 5 '-echo "Yielding with $template"'
   render "$template"
   #echo "Calling yield with top_level_template '$top_level_template'" >&2
   #render "$top_level_template"
@@ -131,6 +136,7 @@ yield() {
 # Return non-haserl text to client.
 # Make sure to set content_type appropriately.
 output() {
+	log 5 'Running output()'
   local data="${1:-$(cat -)}"
   headers
   printf '%s\r\n' "$data"
@@ -152,6 +158,7 @@ html_escape() {
 set_cookie() {
   local name="$1"
   local data="$2"
+	log 6 '-echo "Called set_cookie with $name $data"'
   shift; shift;
   local enc_cookie_data=$(printf '%s' "$data" | encrypt)
   local cookie_params=$(for x in $@; do printf '; %s' "$x"; done)
@@ -162,6 +169,7 @@ set_cookie() {
 
 get_cookie() {
   local name="$1"
+	log 6 '-echo "Called get_cookie with $name"'
   eval "local raw=\$COOKIE_$name"
   if [ -z "$raw" ]; then return 1; fi
   printf '%s' "$raw" | decrypt
@@ -250,6 +258,7 @@ cookie_unsafe() {
 ##### Internal Setup & Server Functions #####
 
 setup() {
+	log 5 "Running setup()"
   if [ ! -z $is_setup ]; then
     return 0
   fi
@@ -273,6 +282,7 @@ setup() {
 # Assumes all necessary data is in env vars.
 #
 run() {
+	log 5 "Called run()"
   { 
 		# Experimental set PATH_INFO to '/' under certain circumstances.
 		if [ "$REQUEST_URI" = "$SCRIPT_NAME/" ]; then
