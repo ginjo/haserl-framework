@@ -190,8 +190,8 @@ handle_request() {
 	local chr=''
 	while :; do  #[ "$?" == "0" ]; do
 		log 6 '-echo "Determining request type ($(get_pids))"'
-		chr=$(dd count=1 bs=1 2>&106)
-		#IFS= read -rn1 chr
+		#chr=$(dd count=1 bs=1 2>&106)
+		IFS= read -rn1 chr
 		log 6 '-echo "Read ${#chr} chr from request:$chr"' #>&106
 		line="$line$chr"
 		[ -z "$line" ] && break 1
@@ -305,6 +305,8 @@ handle_scgi() {
 		log 5 "Reading $len characters of scgi input"
 	
 		# Reads header length, reads headers, translates into env var code.
+		# Must not use a variable to store scgi headers before translating null-byte,
+		# since null-bytes can't be stored in variables.
 		local scgi_headers=$(
 			dd count=$(($len)) bs=1 2>&106 |
 			tr '\0' '\n' |
@@ -318,7 +320,8 @@ handle_scgi() {
 		# There is still a comma being left over. Try dropping it.
 		# This works, but...
 		# TODO: Make sure this works with POST containing body text.
-		local dropped_chr=$(dd count=1 bs=1 2>/dev/null)
+		#local dropped_chr=$(dd count=1 bs=1 2>/dev/null)
+		IRS= read -rn1 dropped_chr
 		log 6 '-echo "Dropped ($dropped_chr) from end of scgi input"'
 		
 		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
@@ -331,7 +334,7 @@ handle_scgi() {
 		# Gets remaining stdin containing request body, if exists.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
 			log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
-			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=1 2>&106)  # tee -a scgi_input.txt)
+			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=1 2>&106)
 			#echo "Request body: $REQUEST_BODY"
 		fi
 		
