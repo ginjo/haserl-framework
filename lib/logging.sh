@@ -35,9 +35,9 @@ log() {
 		#echo "Checking input log level $1 against setting $LOG_LEVEL"
 		if [ $level -le $LOG_LEVEL ]; then
 			if [ $LOG_LEVEL -ge 5 ]; then
-			  more_log_data="logpid ${$}$(timer ' ')"
+			  timer_data="$(timer)"
 			fi
-			printf '%s : ' "$(date -Iseconds) $more_log_data $LOG_LABLE [$(log_level_name $level)]" | sed 's/ \+/ /g'
+			printf '%s : ' "$(date -Iseconds) $timer_data $LOG_LABLE $$ [$(log_level_name $level)]" | sed 's/ \+/ /g'
 			if [ ! -z "$cmd" ]; then				
 				eval "${cmd/-/}"
 			elif [ ! -z "$str" ]; then
@@ -50,7 +50,8 @@ log() {
 }
 
 timer() {
-	read up rest </proc/uptime; printf '%s' "$1$up"
+	read up rest </proc/uptime
+	printf '%s' "$1$up"
 }
 
 # Expects <n> <string>
