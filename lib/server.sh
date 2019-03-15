@@ -136,6 +136,9 @@ request_loop() {
 	#   while :; do printf '%s\n%s\n%s\n\n%s\n' first second third fourth >fifo; echo "done"; sleep 1; done
 	#
 	# Try the above examples with socat writing to the fifo. Does it work the same? Do null-bytes have any effect?
+	# Yes, using this: socat tcp-l:1500,reuseaddr,fork - >fifo.
+	# Then pass the same test string above through another socat to localhost:1500.
+	#
 	# Remember that 'read' is useless with null bytes, since they can't be stored in a var.
 	# To properly handle null bytes from input, you would need to use dd, tr, sed, or some combo of those,
 	# depending on what you want to do with the null bytes.
