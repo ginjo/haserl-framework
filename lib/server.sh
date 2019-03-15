@@ -46,7 +46,7 @@ export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 export HF_LISTENER="${HF_LISTENER:=tcp-l:1500,reuseaddr}"
 #export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t5 -T60}"
-export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -T60}"
+export HF_LISTENER_OPTS="${HF_LISTENER_OPTS:=-d -t10 -T60}"
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -122,16 +122,26 @@ socat_server(){
 }
 
 request_loop() {
-	# FIX: There is a race condition somewhere in the loop,
-	# that causes all 1+n requests to hang at the beginning.
-	# The issue that was recently fixed was a couple extra chrs
-	# leftover in the input pipe, clogging up handle_request().
-	# TODO: Improve initial-character read and inspection,
-	# and add a rule to the if/else conditions at beginning
-	# of list handle_request().
-	#   Drop any non-alnum characters at beginning
-	# Don't forget to adjust the temp fix put in place 
-	# at the time of this writing (2019-03-07T01:35:00-PST). (which was...?)
+	# NOTE: To properly read chrs or lines from a fifo, you should perform all reading
+	# within a subshell with input redirected from fifo. That way, the fifo won't close until you're done.
+	# Or open the fifo for reading manually with a FD, then close it after you're done.
+	#
+	# This example reads line-by-line, stops at first empty line, then reads the rest.
+	#   ( while :; do IFS= read -r line; echo "$line"; [ "$line" == '' ] && break; done; cat - ) <fifo
+	#
+	# I think you can do the same for single chrs too, like this:
+	#   ( while :; do IFS= read -rn1 chr; echo "$chr"; [ "$lst$chr" == '' ] && break; lst="$chr"; done; cat - ) <fifo
+	#
+	# Here's the fifo input for the above two examples:
+	#   while :; do printf '%s\n%s\n%s\n\n%s\n' first second third fourth >fifo; echo "done"; sleep 1; done
+	#
+	# Try the above examples with socat writing to the fifo. Does it work the same? Do null-bytes have any effect?
+	# Remember that 'read' is useless with null bytes, since they can't be stored in a var.
+	# To properly handle null bytes from input, you would need to use dd, tr, sed, or some combo of those,
+	# depending on what you want to do with the null bytes.
+	# 
+	# For fifo behavior, read: https://stackoverflow.com/questions/33773710/why-read-n-from-fifo-file-will-lost-data-in-shell.
+	#
 	exec 0<"$FIFO_INPUT"
 	log 4 '-echo "Starting request loop listener ($(get_pids))"'
 
