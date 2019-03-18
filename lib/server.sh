@@ -92,7 +92,7 @@ socat_server(){
 		# The shut-null on addr2 is experimental. The null-eof's are both experimental.
 		# The keepalive doesn't seem to help redirects use keepalive.
 		#socat $HF_LISTENER_OPTS $HF_LISTENER,fork,shut-null,null-eof,keepalive STDIO,shut-null,null-eof 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
-		socat $HF_LISTENER_OPTS $HF_LISTENER,fork,keepalive STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
+		socat $HF_LISTENER_OPTS $HF_LISTENER,fork,keepalive,setlkw STDIO 1>"$FIFO_INPUT" 0<"$FIFO_OUTPUT"
 		
 		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
 		# # This does not require the request_loop function (since this IS the request loop here).
@@ -151,6 +151,9 @@ request_loop() {
 	while [ $? -eq 0 ]; do
 		log 5 "Begin request loop"
 		
+		# Manually opens stdout to fifo. I think must be open before subshell runs.
+		exec 1>"$FIFO_OUTPUT"
+		
 		( # This is where the request is currently subshelled, to protect the main server env.
 		  # It may not be necessary to subshell, however, since the entire script-run may be
 		  # in a subshell, if it's running as the last part of a pipe. Check all your pipes.
@@ -169,9 +172,6 @@ request_loop() {
 			fi
 			log 5 '-echo "Read $chr from $FIFO_INPUT, sending control to handle_request"'
 			
-			# Manually opens stdout to fifo.
-			#exec 1>"$FIFO_OUTPUT"
-			
 			handle_request "$chr" #>"$FIFO_OUTPUT"
 			# Not clear if this EOF helps or not.
 			printf '\0' #>"$FIFO_OUTPUT"
@@ -183,9 +183,10 @@ request_loop() {
 			# when the loop begins again to quickly. Hasn't been needed in awhile.
 			#sleep 1
 
-		) >"$FIFO_OUTPUT"
+		) #>"$FIFO_OUTPUT"
 		
 		log 5 "End request loop"
+		exec 1>&-
 	done
 	log 2 '-echo "Leaving request loop listener ($(get_pids)) exit code ($?)"'
 	
@@ -245,12 +246,9 @@ handle_request() {
 	log 4 '-echo "Elapsed ${elapsed_time}s Start $start_time End $end_time"'
 } # Stdout should go back to socat server. Do not redirect.
 
-# The handler processes the input from socat and sends it to the daemon via fifo.
-# This accepts and handles http and non-http input containing env code (cgi).
-# TODO: Refactor this function & split it into two (http, cgi).
-#
+# This accepts and handles http input.
 handle_http(){
-	log 5 "Begin handle_http/handle_cgi with '$1' ($(get_pids))"
+	log 5 "Begin handle_http with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
 	inpt=$({
 		local line=''
@@ -261,33 +259,56 @@ handle_http(){
 		log 6 "FIRST-LINE: $first_line"
 		printf '%s\n' "$first_line"
 
-		if printf '%s' "$first_line" | grep -qE '^(GET|POST|PUT|DELETE)'; then
-		# If this is a valid http request, ingest it as such...
-			# This should probably be a custom env var like HTTP_REQUEST,
-			# then parse that in its own function, or in the framework, or in process_request()
-			export PATH_INFO=$(echo "$first_line" | sed 's/^[[:alpha:]]\+ \([^ ]\+\) .*$/\1/')
-			log 5 "Reading raw http (or cgi) headers from stdin."
-			while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
-				IFS= read -r line
-				[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
-				printf '%s\n' "$line"
-			done
-			if [ $(($len)) > 0 ]; then
-				log 6 '-echo "Calling head on stdin with -c $len"'
-				head -c $(($len))
-			fi
-		else # If this is just a list of env vars...
-			log 5 "Reading cgi input (env vars) from stdin."
-			# FIX: This doesn't ever return now.
-			#cat #| tee /tmp/log_106
-			
-			# This is necessary, because otherwise reading from stdin hangs.
-			# This happens when pushing env vars from a cgi script to this app
-			# using nc, socat, or directlly via fifo.
-			# If receiving these cgi/haserl requests over the socat interface,
-			# you may also need to adjust -t and -T on that interface using $HF_LISTENER_OPTS.
-			socat -u -T0.2 - -
+		# This should probably be a custom env var like HTTP_REQUEST,
+		# then parse that in its own function, or in the framework, or in process_request()
+		export REQUEST_URI=$(echo "$first_line" | sed 's/^[[:alpha:]]\+ \([^ ]\+\) .*$/\1/')
+		# TODO: Move this line further up the chain (closer to the framework).
+		export PATH_INFO="${PATH_INFO:-$REQUEST_URI}"
+		export REQUEST_METHOD=$(echo "$first_line" | sed 's/^\([[:alpha:]]\+\) [^ ]\+ .*$/\1/')
+		log 5 "Reading raw http headers from stdin."
+		while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
+			IFS= read -r line
+			[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
+			printf '%s\n' "$line"
+		done
+		if [ $(($len)) > 0 ]; then
+			log 6 '-echo "Calling head on stdin with -c $len"'
+			head -c $(($len))
 		fi
+
+		
+		export -p
+		
+		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
+		# otherwise the response gets back to the client before
+		# the data can be processed, and the client disconnects.
+	}) #| process_request
+	
+	log 5 'Calling process_request with http input'
+	echo "$inpt" | process_request
+	
+	log 5 "End handle_http"
+} # Stdout goes back to socat server. Do not redirect.
+
+# This accepts and handles cgi input containing env vars.
+handle_cgi(){
+	log 5 "Begin handle_cgi with '$1' ($(get_pids))"
+	# All stdout in this block gets sent to process_request()
+	inpt=$({
+
+		printf '%s' "$1"
+
+
+		log 5 "Reading cgi input (env vars) from stdin."
+		# FIX: This doesn't ever return now.
+		#cat #| tee /tmp/log_106
+		
+		# This is necessary, because otherwise reading from stdin hangs.
+		# This happens when pushing env vars from a cgi script to this app
+		# using nc, socat, or directlly via fifo.
+		# If receiving these cgi/haserl requests over the socat interface,
+		# you may also need to adjust -t and -T on that interface using $HF_LISTENER_OPTS.
+		socat -u -T0.2 - -
 		
 		export -p
 		
@@ -299,12 +320,13 @@ handle_http(){
 	log 5 'Calling process_request with cgi input'
 	echo "$inpt" | process_request
 	
-	log 5 "End handle_http/handle_cgi"
+	log 5 "End handle_cgi"
 } # Stdout goes back to socat server. Do not redirect.
 
-#alias handle_cgi='handle_http()'
-handle_cgi() { handle_http "$@"; }
-#alias handle_cgi='handle_http'
+# OLD:
+# #alias handle_cgi='handle_http()'
+# handle_cgi() { handle_http "$@"; }
+# #alias handle_cgi='handle_http'
 
 # Accepts and parses SCGI input on stdin, and sends it to process_request.
 # Respons from process_request is returned on stdout to upstream handle_request.
@@ -349,7 +371,7 @@ handle_scgi() {
 		# Gets remaining stdin containing request body, if exists.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
 			log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
-			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=1 2>&106)
+			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
 			#echo "Request body: $REQUEST_BODY"
 		fi
 		
@@ -387,7 +409,7 @@ process_request() {
 	#printf '%s\r\n' "HTTP/1.1 200 OK"
 	# But does this really belong here?
 	if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
-		printf '%s\n' "HTTP/1.0 200 OK"
+		printf '%s\n' "HTTP/1.1 200 OK"
 	fi
 	
 	run
