@@ -40,6 +40,7 @@
 
 export FIFO_INPUT="${FIFO_INPUT:=/tmp/fifo_input}"
 export FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/fifo_output}"
+export FIFO_TOKEN="${FIFO_TOKEN:=/tmp/fifo_token}"
 export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
 export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
@@ -97,7 +98,7 @@ socat_server(){
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); mkfifo "/tmp/hf_${id}_in" "/tmp/hf_${id}_out"; echo "${id}" > /root/haserl_framework_app/fifo; cat > "/tmp/hf_${id}_in" | { cat "/tmp/hf_${id}_out"; rm -f "/tmp/hf_${id}_*"; }',null-eof,pipes
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); mkfifo "/tmp/hf_${id}_out"; echo "${id}" > /root/haserl_framework_app/fifo; cat "/tmp/hf_${id}_out"; rm -f "/tmp/hf_${id}_*"',pipes
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); echo "${id}" > /root/haserl_framework_app/fifo; sleep 10',pipes
-		socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id="$$"; echo "${id}" > /root/haserl_framework_app/fifo; sleep 10',pipes
+		socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'pid="$$"; printf %s "${pid}" >"$FIFO_TOKEN"; sleep 10',pipes
 		
 		
 		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
@@ -242,19 +243,33 @@ request_loop() {
 
 # Taps into socat fifo IO.
 handle_socat_loop() {
+	local display_pids="$(get_pids)"
+	log 4 '-echo "Listening for input from socat ($display_pids)"'
 	while :; do
-		log 5 "Listening for input from socat loop ($(get_pids))"
-		IFS= read -r id </root/haserl_framework_app/fifo
-		log 5 "Handle_socat_loop receiving request for fifo ($id) ($(get_pids))"
+		log 6 '-echo "Handle_socat_loop (re)beginning possibly after forking subshell ($display_pids)"'
+		IFS= read -r token <"$FIFO_TOKEN"
+		
+		# Go around again if bad/no data received from token pipe.
+		if [ -z "$token" -o "${token/*[^0-9]*/bad}" == 'bad' ]; then
+			log 3 "Handle_socat_loop received bad/empty token ($token) from $FIFO_TOKEN"
+			continue
+		# # Or if socat /proc/$token/fd/ not ready.
+		# # I don't think this will work, since another read will clear a good token.
+		# elif [ ! -d "/proc/$token/fd/" ]; then
+		# 	log 4 "Socat pipes not ready in /proc/$token/fd/"
+		# 	continue
+		fi
+		
+		log 5 "Handle_socat_loop receiving request in (/proc/$token/fd/) ($display_pids)"
 		(
-			exec 0</proc/${id}/fd/0
-			exec 1>/proc/${id}/fd/1
-			handle_request #</proc/${id}/fd/0 >/proc/${id}/fd/1
+			exec 0</proc/${token}/fd/0
+			exec 1>/proc/${token}/fd/1
+			handle_request #</proc/${token}/fd/0 >/proc/${token}/fd/1
 			printf '\0'
-			log 5 "After handle_request, cleanup ($id)"
+			log 5 "Handle_socat_loop cleannig after handle_request for token ($token)"
 			exec 0<&-
 			exec 1>&-
-			kill -1 "${id}"
+			kill -1 "${token}"
 		) &
 	done
 }
@@ -624,11 +639,11 @@ stop_server() {
 
 initialize() {
 	# Sets up fifo files.
-	log 6 'Setting fifo in/out files.'
-	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT"
-	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT"
-	rm -f /tmp/hf_fifo*
+	log 6 'Setting up fifo files.'
+	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT" "$FIFO_TOKEN"
+	rm -f "$FIFO_INPUT" "$FIFO_OUTPUT" "$FIFO_TOKEN"
+	mkfifo "$FIFO_INPUT" "$FIFO_OUTPUT" "$FIFO_TOKEN"
+	rm -f /tmp/hf_*
 
 	# Sets up the haserl template file.
 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
@@ -644,7 +659,7 @@ trap 'cleanup_logging; handle_trap' 1 2 3 4 6 15
 # Handles cleanup when the application quits.
 handle_trap(){
 	echo "Running handle_trap for $(get_pids)"
-	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$fifo_output" /tmp/hf_fifo*
+	rm -f "$HASERL_ENV" "$FIFO_INPUT" "$FIFO_OUTPUT" "$FIFO_TOKEN" "$fifo_output" /tmp/hf_fifo*
 	local pid="$(cat $PID_FILE)"
 	rm -f "$PID_FILE"
 	printf '\n%s\n' "Goodbye!"
