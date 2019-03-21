@@ -90,12 +90,16 @@ content_type() {
 redirect() {
   location="$1"
   status="${2:-307 Temporary}"
-	log 5 '-echo "Redirecting  to $location, with status $status"'
-  printf '%s\r\n' "Status: $status"
-  printf '%s\r\n' "Location: $location"
-	printf '%s\r\n' "Connection: KeepAlive"
-  printf '%s\r\n'
+	log 4 '-echo "Redirecting  to $location, with status $status"'
+	#   printf '%s\r\n' "Status: $status"
+	#   printf '%s\r\n' "Location: $location"
+	# 	printf '%s\r\n' "Connection: Close"
+	#   printf '%s\r\n'
+	header "Status: $status"
+	header "Location: $location"
+	header "Connection: Close"
 	export redirected="$location"
+	headers
 }
 
 # This is main render, called from the app or controller.
@@ -262,10 +266,12 @@ setup() {
   if [ ! -z $is_setup ]; then
     return 0
   fi
-    
-  if [ -z "$APPDIR" ]; then
-    APPDIR="$( dirname "$(readlink -f "$0")" )"
-  fi
+  
+	# TODO: Should this be in server.sh, or stay here? Where is it used?
+  APPDIR="${APPDIR:=$( dirname "$(readlink -f "$0")" )}"
+
+	# Same here as above.
+	PUBLICDIR="${HF_PUBLIC:=${APPDIR}/public}"
 
   action_index=1
   is_setup=true
@@ -295,9 +301,20 @@ run() {
     if [ -z "$path_info" ]; then
       path_info='/'
     fi
+		
+		# Serves static assets.
+		# NOTE: Experimental, this does not server the assets properly yet.
+		if [ -f "${PUBLICDIR}${path_info}" ]; then
+			log 4 '-echo "Serving static asset ${PUBLICDIR}${path_info}"'
+			header "Content-Type: application/octet-stream"
+			headers
+			cat "${PUBLICDIR}${path_info}"
+			return 0
+		fi
     
     # Selects matching PATH_INFO and REQUEST_METHOD (if request-method constraint is defined),
     # then calls action associated with route.
+		# Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
     for i in $( seq 1 $(($action_index - 1)) ); do
       eval "local match=\$action_match_$i"
       eval "local code=\$action_code_$i"
@@ -322,7 +339,7 @@ run() {
     #headers
     #echo "Error: action failed"
     #echo "$!"
-    output "haserl_framework: an error occurred, or no action matched PATH_INFO '$PATH_INFO'\
+    output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'\
     $1"
     return 1
   } #2>>haserl_framework.log
@@ -347,10 +364,16 @@ run_after() {
 }
 
 # Formats & returns headers for output.
+# TODO: Create a clear framework-wide policy for handling headers. This is currently kinda messy.
 headers() {
-  # According to RFC 2616, proper header-block termination should be \r\n\r\n (I think).
+  # According to RFC 2616, proper header-block termination should be \r\n\r\n,
+  # and each header line should be terminated with \r\n.
   # printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
+	header "Connection: close"
   export headers=$(printf '%s\r\n%sEEOOLL' "Content-Type: ${content_type:-text/html}" "$headers")
+	if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
+		headers=$( printf '%s\r\n%s' "HTTP/1.1 ${status:-200 OK}" "$headers")
+	fi
   headers="${headers%EEOOLL}"
   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
   printf '%s\r\n' "$headers"
