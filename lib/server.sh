@@ -495,7 +495,7 @@ process_request() {
 	
 	run
 	
-	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${REQUEST_URI:-REQUEST_URI N/A}"
+	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${REQUEST_URI:-REQUEST_URI N/A} $STATUS"
 	log 5 "End process_request"
 } # Stdout returns to request handler, do not redirect.
 

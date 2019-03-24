@@ -86,17 +86,17 @@ content_type() {
 # Redirects request.
 # Params
 #   $1  - location
-#   $2  - status (must include code and message: "307 Temporary")
+#   $2  - STATUS (must include code and message: "307 Temporary")
 # See https://openwrt-devel.openwrt.narkive.com/K75cDiIZ/uhttpd-cgi-redirect
 redirect() {
   location="$1"
-  status="${2:-307 Temporary}"
-  log 4 '-echo "Redirecting  to $location, with status $status"'
-  #   printf '%s\r\n' "Status: $status"
+  STATUS="${2:-307 Temporary}"
+  log 4 '-echo "Redirecting to $location $STATUS"'
+  #   printf '%s\r\n' "Status: $STATUS"
   #   printf '%s\r\n' "Location: $location"
   #   printf '%s\r\n' "Connection: Close"
   #   printf '%s\r\n'
-  header "Status: $status"
+  #header "Status: $STATUS"
   header "Location: $location"
   header "Connection: Close"
   export redirected="$location"
@@ -281,9 +281,10 @@ setup() {
 # Runs the action after routes have been defined by user.
 # Expects request env vars to be populated already.
 #
-#	For safety, normal stdout of the run() funtion is redirected to $ROGUE_OUTPUT fd (defaults to '104').
-# All client-bound output during the request 'run' should be sent to &100.
+#	For safety, normal stdout of the run() function is redirected to $ROGUE_OUTPUT fd (defaults to '104').
+# All client-bound output during the run() func should be sent to >&100.
 # Use stderr during the request 'run' for all messages that should be sent back to server stdout or log.
+# User-space functions like render(), output(), redirect(), etc all send output to >&100 by default.
 #
 # Expects no input from stdin or from args.
 # Assumes all necessary data is in env vars.
@@ -302,6 +303,8 @@ run() {
   if [ -z "$path_info" ]; then
     path_info='/'
   fi
+
+	export STATUS="${STATUS:-200 OK}"
   
   # Serves static assets.
   # NOTE: Experimental, this does not server the assets properly yet.
@@ -327,10 +330,13 @@ run() {
       if [ -z "$redirected" -a $? = 0 ]; then
         log 6 "Running action with match ($match) method ($method) code ($code)"
         eval "$code"
+				# Should this final blank line be injected from some other function?
         printf '\r\n' >&100
       fi
       #echo "Some rogue text in the run() function"
-      run_after >&2
+			if [ -z "$redirected" ]; then
+	      run_after >&2
+			fi
       return 0
      fi
    done
@@ -341,6 +347,7 @@ run() {
    #headers
    #echo "Error: action failed"
    #echo "$!"
+	 STATUS='404 Not Found'
    output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'\
    $1"
    return 1
@@ -366,6 +373,8 @@ run_after() {
 
 # Formats & returns headers for output.
 # TODO: Create a clear framework-wide policy for handling headers. This is currently kinda messy.
+#       Do modify headers or data, when headers() is called. Must be callable multiple times,
+#       for checking logging or user query.
 headers() {
   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
   # and each header line should be terminated with \r\n.
@@ -373,7 +382,9 @@ headers() {
   header "Connection: close"
   export headers=$(printf '%s\r\n%sEEOOLL' "Content-Type: ${content_type:-text/html}" "$headers")
   if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
-    headers=$( printf '%s\r\n%s' "HTTP/1.1 ${status:-200 OK}" "$headers")
+    headers=$( printf '%s\r\n%s' "HTTP/1.1 $STATUS" "$headers")
+	else
+		headers=$( printf '%s\r\n%s' "Status: $STATUS" "$headers")
   fi
   headers="${headers%EEOOLL}"
   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
