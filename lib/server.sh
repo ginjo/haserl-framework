@@ -508,6 +508,8 @@ process_request() {
 	# fi
 	
 	run
+	# TODO: Dunno if this is the right place for this.
+	printf '\r\n'
 	
 	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${REQUEST_URI:-REQUEST_URI N/A} $STATUS"
 	log 5 "End process_request"

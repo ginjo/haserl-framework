@@ -151,7 +151,7 @@ output() {
   log 5 'Running output()'
   local data="${1:-$(cat -)}"
   headers
-  printf '%s\r\n' "$data"
+  printf '%s' "$data"
 } >&100
 
 # See https://stackoverflow.com/questions/12873682/short-way-to-escape-html-in-bash
@@ -339,7 +339,7 @@ run() {
         log 6 "Running action with match ($match) method ($method) code ($code)"
         eval "$code"
 				# Should this final blank line be injected from some other function?
-        printf '\r\n' >&100
+        #printf '\r\n' >&100
       fi
       #echo "Some rogue text in the run() function"
 			if [ -z "$redirected" ]; then
@@ -408,11 +408,13 @@ headers() {
 	else
 		local status_header="Status: $STATUS"
   fi
+	# Should be valid HTTP-date format.
+	local date_header="Date: $(date -u +%a,\ %d\ %b\ %Y\ %H:%M:%S\ GMT)"
   local keep_alive_header="${KEEP_ALIVE:-Connection: close}"
 	local content_type_header="Content-Type: ${content_type:-text/html}"
 
 	export OUTPUT_HEADERS=$(
-		printf '%s\n' "$status_header" "$content_type_header" "$keep_alive_header" "$headers"
+		printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$keep_alive_header" "$headers"
 		#printf '%s' "$headers"
 	)
 	
