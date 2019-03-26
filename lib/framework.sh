@@ -42,6 +42,8 @@ before() {
   # Note that command-substitution $() strips ending newlines,
   # thus the EEOOLL and the subsequent brace-expansion to remove EEOOLL,
   # yet keep the new lines.
+	# TODO: You can get rid of the EEOOLL, because leading new-lines are
+	# also cut when using $(). See header/headers for how to handle new-lines.
   run_before=$(printf '%s%s\n\nEEOOLL' "$run_before" "$code")
   run_before="${run_before%EEOOLL}"
   #printf 'BEFORE() called:%s' "$run_before" >&2
@@ -72,10 +74,15 @@ route() {
 }
 
 # Sets a new line in headers.
+# The EEOOLL is needed to preserve the final \r\n,
+# since command substitution $() strips it.
 header() {
   log 6 "Setting header $1"
-  export headers=$(printf '%s\r\nEEOOLL' "$headers$1")
-  headers="${headers%EEOOLL}"
+  #export headers=$(printf '%s\n%s' "$headers" "$1")
+	NL=$'\n'
+	# Concatenates existing headers with new header,
+	# with a newline in between if headers existed.
+	export headers="${headers}${headers:+${NL}}$1"
 }
 
 content_type() {
@@ -91,7 +98,7 @@ content_type() {
 redirect() {
   location="$1"
   STATUS="${2:-307 Temporary}"
-  log 4 '-echo "Redirecting to $location $STATUS"'
+  log 5 '-echo "Redirecting to $location $STATUS"'
   #   printf '%s\r\n' "Status: $STATUS"
   #   printf '%s\r\n' "Location: $location"
   #   printf '%s\r\n' "Connection: Close"
@@ -121,7 +128,7 @@ render() {
 
     if [ ! -z "$layout" ]; then
       #export top_level_template="$template"
-      headers
+      headers   #| tee -a /root/haserl_framework_app/debug_headers.log
       log 5 '-echo "Calling haserl layout with $APPDIR/views/$layout"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$layout"
     else
@@ -310,7 +317,8 @@ run() {
   # NOTE: Experimental, this does not server the assets properly yet.
   if [ -f "${PUBLICDIR}${path_info}" ]; then
     log 4 '-echo "Serving static asset ${PUBLICDIR}${path_info}"'
-    header "Content-Type: application/octet-stream"
+    #header "Content-Type: application/octet-stream"
+		content_type 'application/octet-stream'
     headers >&100
     cat "${PUBLICDIR}${path_info}" >&100
     return 0
@@ -318,15 +326,15 @@ run() {
    
    # Selects matching PATH_INFO and REQUEST_METHOD (if request-method constraint is defined),
    # then calls action associated with route.
-  # Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
+   # Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
    for i in $( seq 1 $(($action_index - 1)) ); do
      eval "local match=\$action_match_$i"
      eval "local code=\$action_code_$i"
      eval "local method=\$action_method_$i"
      #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
     if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
-       run_before >&2
-       #echo "Test-error from just before (eval 'code') within run() function." >&2
+      run_before >&2
+      #echo "Test-error from just before (eval 'code') within run() function." >&2
       if [ -z "$redirected" -a $? = 0 ]; then
         log 6 "Running action with match ($match) method ($method) code ($code)"
         eval "$code"
@@ -373,22 +381,49 @@ run_after() {
 
 # Formats & returns headers for output.
 # TODO: Create a clear framework-wide policy for handling headers. This is currently kinda messy.
-#       Do modify headers or data, when headers() is called. Must be callable multiple times,
+#       Dont modify headers or data, when headers() is called. Must be callable multiple times,
 #       for checking logging or user query.
+# headers() {
+#   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
+#   # and each header line should be terminated with \r\n.
+#   # printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
+#   header "Connection: close"
+#   export headers=$(printf '%s\r\n%sEEOOLL' "Content-Type: ${content_type:-text/html}" "$headers")
+#   if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
+#     headers=$( printf '%s\r\n%s' "HTTP/1.1 $STATUS" "$headers")
+# 	else
+# 		headers=$( printf '%s\r\n%s' "Status: $STATUS" "$headers")
+#   fi
+#   headers="${headers%EEOOLL}"
+#   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
+#   printf '%s\r\n' "$headers"
+# }
+
 headers() {
   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
   # and each header line should be terminated with \r\n.
-  # printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
-  header "Connection: close"
-  export headers=$(printf '%s\r\n%sEEOOLL' "Content-Type: ${content_type:-text/html}" "$headers")
+	# TODO: Final output status should maybe be handled by run() or process_request().
   if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
-    headers=$( printf '%s\r\n%s' "HTTP/1.1 $STATUS" "$headers")
+    local status_header="HTTP/1.0 $STATUS"
 	else
-		headers=$( printf '%s\r\n%s' "Status: $STATUS" "$headers")
+		local status_header="Status: $STATUS"
   fi
-  headers="${headers%EEOOLL}"
+  local keep_alive_header="${KEEP_ALIVE:-Connection: close}"
+	local content_type_header="Content-Type: ${content_type:-text/html}"
+
+	export OUTPUT_HEADERS=$(
+		printf '%s\n' "$status_header" "$content_type_header" "$keep_alive_header" "$headers"
+		#printf '%s' "$headers"
+	)
+	
+	log 6 "OUTPUT_HEADERS:"
+	log 6 "${OUTPUT_HEADERS}"
+	
+	printf '%s\n\n' "${OUTPUT_HEADERS}" | sed 's/$/\r/'
+
+  #headers="${headers%EEOOLL}"
   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
-  printf '%s\r\n' "$headers"
+  #printf '%s\r\n' "$headers"
 }
 
 # Filters fifo-input env string, so it can be eval'd safely.

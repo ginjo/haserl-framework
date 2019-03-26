@@ -46,7 +46,9 @@ export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
 export SOCAT_ADDR="${SOCAT_ADDR:=tcp-l:1500,reuseaddr}"
-export SOCAT_OPTS= #"${SOCAT_OPTS:=-d -T60}"
+# Still need to export this, even if default is null.
+# If using the CGI interface, you will need to set -t to something above default (0.5), try 1.
+export SOCAT_OPTS  #= "${SOCAT_OPTS:=-d -T60}"  
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -98,7 +100,10 @@ socat_server(){
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); mkfifo "/tmp/hf_${id}_in" "/tmp/hf_${id}_out"; echo "${id}" > /root/haserl_framework_app/fifo; cat > "/tmp/hf_${id}_in" | { cat "/tmp/hf_${id}_out"; rm -f "/tmp/hf_${id}_*"; }',null-eof,pipes
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); mkfifo "/tmp/hf_${id}_out"; echo "${id}" > /root/haserl_framework_app/fifo; cat "/tmp/hf_${id}_out"; rm -f "/tmp/hf_${id}_*"',pipes
 		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'export id=$(exec sh -c '\''echo "$PPID"'\''); echo "${id}" > /root/haserl_framework_app/fifo; sleep 10',pipes
-		socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'pid="$$"; printf %s "${pid}" >"$FIFO_TOKEN"; sleep 10',pipes
+		#socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'pid="$$"; printf %s "${pid}" >"$FIFO_TOKEN"; sleep 10',pipes
+		# Sending newline here with printf, otherwise tokens will get stacked up in pipe with no line delimiter.
+		# Using echo doesn't work, it somehow polutes the token with request data.
+		socat $SOCAT_OPTS $SOCAT_ADDR,fork system:'pid="$$"; printf %s\\\n "${pid}" >"$FIFO_TOKEN"; sleep 10',pipes
 		
 		
 		# # Loops with non-forking socat and uniq per-request single fifo file. This also works well.
@@ -262,13 +267,22 @@ handle_socat_loop() {
 		
 		log 5 "Handle_socat_loop receiving request in (/proc/$token/fd/) ($display_pids)"
 		(
+			# Get stdin/out from socat-created pipes.
 			exec 0</proc/${token}/fd/0
 			exec 1>/proc/${token}/fd/1
 			handle_request #</proc/${token}/fd/0 >/proc/${token}/fd/1
+			
+			# Is this null byte necessary?
 			printf '\0'
+			
 			log 5 "Handle_socat_loop cleannig after handle_request for token ($token)"
+			# Close stdin/out
 			exec 0<&-
 			exec 1>&-
+			
+			# This is needed to close out the socat 'system' subshell when using http or scgi interface,
+			# since no sockets ever report EOF in this situation (and thus the need to keep the subshell open aritificially).
+			log 5 '-echo "Killing socat system subshell (token $token)"'
 			kill -1 "${token}"
 		) &
 	done
@@ -402,7 +416,7 @@ handle_cgi(){
 		# otherwise the response gets back to the client before
 		# the data can be processed, and the client disconnects.
 	}) #| process_request
-	
+
 	log 5 'Calling process_request with cgi input'
 	echo "$inpt" | process_request
 	
@@ -499,7 +513,7 @@ process_request() {
 	log 5 "End process_request"
 } # Stdout returns to request handler, do not redirect.
 
-# Filters input for only single-quoted safely eval'able var definitions,
+# Filters input for only single-quoted safely evalable var definitions,
 # then evals each of those lines.
 # Expects input on stdin.
 eval_input_env() {
@@ -516,6 +530,8 @@ eval_input_env() {
 # Filters evalable env code from stdin (var='anything-but-literal-single-quote').
 # Does no modification of string.
 # Expects input string on stdin to be output from 'env' or 'export -p'.
+# FIX: This breaks if any values contain an unescaped literal newline.
+#      Literal new lines should be backslash-escaped.
 evalable_env_from_input() {
 	#echo "$1" | sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 	sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
