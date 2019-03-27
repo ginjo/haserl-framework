@@ -363,7 +363,8 @@ handle_http(){
 		log 5 "Reading raw http headers from stdin."
 		while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
 			IFS= read -r line
-			[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
+			# I think this is now handled in http_header_to_env_var.
+			#[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
 			# We don't want to print http headers here, but we do want to translate them into env vars.
 			#printf '%s\n' "$line"
 			http_header_to_env_var "$line"
@@ -450,7 +451,7 @@ handle_scgi() {
 			sed '$!N;'"s/\n/='/;s/$/'/"
 		)
 		
-		# Drops the last 2 chrs from stdin (I think they were ' ,')
+		# Drops the last 1 chrs from stdin (I think they were ',')
 		# TODO: Is the request body being damaged by this? YES!
 		# TODO: Find a less hacky place/way to do this.
 		#dd count=1 bs=2 >/dev/null 2>&106

@@ -105,7 +105,6 @@ redirect() {
   #   printf '%s\r\n'
   #header "Status: $STATUS"
   header "Location: $location"
-  header "Connection: Close"
   export redirected="$location"
   headers
 } >&100
