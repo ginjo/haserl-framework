@@ -122,7 +122,7 @@ render() {
   # Fork subshell for each render() function, so current template,
   # which must be global, doesn't get confused when calling sub-render functions.
   # TODO: Is this subshelling still necessary with new architecture.
-  (
+  #(
     if [ ! -z "$1" ]; then
       export template="${1}"
     fi
@@ -132,7 +132,6 @@ render() {
     log 5 '-echo "Rendering with $template $layout"'
 
     if [ ! -z "$layout" ]; then
-      #export top_level_template="$template"
       # Moving headers to somewhere downstream.
       #headers   #| tee -a /root/haserl_framework_app/debug_headers.log
       log 5 '-echo "Calling haserl layout with $APPDIR/views/$layout"'
@@ -141,14 +140,12 @@ render() {
       log 5 '-echo "Calling haserl view with $APPDIR/views/$template"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$template"
     fi
-  )
+  #)
 } >&100
 
 yield() {
   log 5 '-echo "Yielding with $template"'
   render "$template"
-  #echo "Calling yield with top_level_template '$top_level_template'" >&2
-  #render "$top_level_template"
 } >&100
 
 # Return non-haserl text to client.
@@ -323,7 +320,7 @@ run_after() {
 # Assumes all necessary data is in env vars.
 #
 run() {
-  log 5 "Called run()"
+  log 5 "Beginning run()"
   # Experimental set PATH_INFO to '/' under certain circumstances.
   if [ "$REQUEST_URI" = "$SCRIPT_NAME/" ]; then
     export PATH_INFO='/'
@@ -339,62 +336,20 @@ run() {
 
   export STATUS="${STATUS:-200 OK}"
 
-	if [ -f "${PUBLICDIR}${path_info}" ]; then
-		send_static_asset "${PUBLICDIR}${path_info}"
-	elif local matched_action=$(select_matching_action "$path_info"); then
-		call_action "$matched_action"
-	else
-		send_404
-	fi
+	# {
+		if [ -f "${PUBLICDIR}${path_info}" ]; then
+			log 5 '-echo "Sending static asset ${PUBLICDIR}${path_info}"'
+			send_static_asset "${PUBLICDIR}${path_info}"
+		elif local matched_action=$(select_matching_action "$path_info"); then
+			log 5 '-echo "Calling call_action with $matched_action"'
+			call_action "$matched_action"
+		else
+			log 5 'Sending 404'
+			send_404
+		fi
+	# } #100>&1 1>&$ROGUE_OUTPUT
   
-  # # Serves static assets.
-  # # NOTE: Experimental, this does not serve the assets properly yet.
-  # if [ -f "${PUBLICDIR}${path_info}" ]; then
-  #   log 4 '-echo "Serving static asset ${PUBLICDIR}${path_info}"'
-  #   #header "Content-Type: application/octet-stream"
-  #   content_type 'application/octet-stream'
-  #   # Moving headers to somewhere downstream.
-  #   #headers >&100
-  #   cat "${PUBLICDIR}${path_info}" >&100
-  #   return 0
-  # fi
-	#
-  # # Selects matching PATH_INFO and REQUEST_METHOD (if request-method constraint is defined),
-  # # then calls action associated with route.
-  # # Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
-  # for i in $( seq 1 $(($action_index - 1)) ); do
-  #   eval "local match=\$action_match_$i"
-  #   eval "local code=\$action_code_$i"
-  #   eval "local method=\$action_method_$i"
-  #   #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
-  #   if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
-  #     run_before >&2
-  #     #echo "Test-error from just before (eval 'code') within run() function." >&2
-  #     if [ -z "$redirected" -a $? = 0 ]; then
-  #       log 6 "Running action with match ($match) method ($method) code ($code)"
-  #       eval "$code"
-  #       # Should this final blank line be injected from some other function?
-  #       #printf '\r\n' >&100
-  #     fi
-  #     #echo "Some rogue text in the run() function"
-  #     if [ -z "$redirected" ]; then
-  #       run_after >&2
-  #     fi
-  #     return 0
-  #   fi
-  # done
-  # 
-  # # If no path-info matches a defined route, output a generic response,
-  # # and then return 1.
-  # content_type 'text/plain'
-  # #headers
-  # #echo "Error: action failed"
-  # #echo "$!"
-  # STATUS='404 Not Found'
-  # output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'\
-  # $1"
-  # return 1
-
+	log 6 "End run()"
 } 100>&1 1>&$ROGUE_OUTPUT
 
 # Expects path-info on $1.
@@ -418,7 +373,7 @@ call_action() {
 	local action_code=$(printf '%s' "$1" | tail -n +2)
 	run_before >&2
   if [ -z "$redirected" -a $? = 0 ]; then
-    log 6 "Running action with match, method, path_info ($action_info)"
+    log 6 '-echo "Calling eval with action_code (match, method, path_info : $action_info)"'
     eval "$action_code"
   fi
   #echo "Some rogue text in the run() function"

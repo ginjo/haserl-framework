@@ -508,13 +508,15 @@ process_request() {
 	# 	printf '%s\n' "HTTP/1.1 ${status:-200 OK}"
 	# fi
 	
+	#headers
 	#run
-	eval_to_var run_result run
-	sleep 1
-	content_length "${#run_result}"
-	
-	headers
-	printf '%s' "$run_result"
+	{
+		eval_to_var run_result run
+		content_length "${#run_result}"
+		headers
+		log 6 "Run_result: $run_result"
+		printf '%s\n' "$run_result"
+	}
 	
 	# # TODO: Dunno if this is the right place for this.
 	# # FIX:  The $(cmd-subst) creates a subshell around the entire run() function,
@@ -592,13 +594,12 @@ sanitize_var_declaration() {
 }
 
 eval_to_var() {
-	echo "Eval_to_var args: $*" >&105
-	echo "Eval_to_var fd's: $(ls -l /proc/$$/fd/)" >&105
+	log 5 "Eval_to_var args: $*"
 	local var_name="$1"
 	
 	shift
-	echo "VAR: $var_name" >&105
-	echo "CMD: $*" >&105
+	log 5 "VAR: $var_name"
+	log 5 "CMD: $*"
 	
 	exec 15>&-
 	exec 16>&-
@@ -607,10 +608,13 @@ eval_to_var() {
 	
 	local fifo_in="/tmp/fifo_in_$id"
 	local fifo_out="/tmp/fifo_out_$id"
-	echo "FIFO: $fifo_in $fifo_out" >&105
+	log 5 "FIFO: $fifo_in $fifo_out"
 	mkfifo "$fifo_in" "$fifo_out"
 	eval "exec 15<>$fifo_in"
 	eval "exec 16<>$fifo_out"
+	
+	local ss_pid=$(exec sh -c 'echo "$PPID"')
+	log 6 "Eval_to_var FDs: $(ls -l /proc/$ss_pid/fd/)"
 	
 	# Buffer runs in background and reads data into var from fifo,
 	# then writes data out to fifo, so fifo won't block on their own buffer.
@@ -623,21 +627,22 @@ eval_to_var() {
 	#
 	(	#buffer &
 		{
+			log 5 "Subshelling fifo buffer helper"
+			# This filter keeps the endofdata tag but discards further lines.
 			local buf="$(sed '/__ENDOFDATA__/q' <&15)"
 			exec 15>&-
-			echo "BUF (0..16): ${buf:0:16}" | head -n1 >&105
+			#log 6 "BUF (0..16): ${buf:0:16}"    #| head -n1 >&105
 			printf '%s\n%s\n\n' "$buf" "__ENDOFDATA__" >&16
 		} &
 	)
 		
 	# Both \n\n are necessary or sed won't see the eof tag.
 	{ eval "$*"; printf '\n%s\n\n' "__ENDOFDATA__"; } >&15
-	echo "CMD sent data to fifo, now reading data into var '$var_name'" >&105
-	#local dat=$(sed '/^$/,/__ENDOFDATA__/q' <&6)
-	#local dat="$(cat <&6)"
-	local dat="$(sed -n '/__ENDOFDATA__/q;p' <&16)"
+	log 5 "CMD sent data to fifo, now reading data into var '$var_name'"
+	# This filter will discard the endofdata tag and all lines beyond it.
+	local dat="$(sed -n '/__ENDOFDATA__/q;p' <&16)"$'\n'
 		
-	echo "DAT (0..16): ${dat:0:16}" | head -n1 >&105
+	#log 6 "DAT (0..16): ${dat:0:16}"  #| head -n1 >&105
 	eval "$var_name"'="$dat"'
 	
 	exec 15>&-
