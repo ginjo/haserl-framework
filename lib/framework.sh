@@ -42,8 +42,8 @@ before() {
   # Note that command-substitution $() strips ending newlines,
   # thus the EEOOLL and the subsequent brace-expansion to remove EEOOLL,
   # yet keep the new lines.
-	# TODO: You can get rid of the EEOOLL, because leading new-lines are
-	# also cut when using $(). See header/headers for how to handle new-lines.
+  # TODO: You can get rid of the EEOOLL, because leading new-lines are
+  # also cut when using $(). See header/headers for how to handle new-lines.
   run_before=$(printf '%s%s\n\nEEOOLL' "$run_before" "$code")
   run_before="${run_before%EEOOLL}"
   #printf 'BEFORE() called:%s' "$run_before" >&2
@@ -79,15 +79,20 @@ route() {
 header() {
   log 6 "Setting header $1"
   #export headers=$(printf '%s\n%s' "$headers" "$1")
-	NL=$'\n'
-	# Concatenates existing headers with new header,
-	# with a newline in between if headers existed.
-	export headers="${headers}${headers:+${NL}}$1"
+  NL=$'\n'
+  # Concatenates existing headers with new header,
+  # with a newline in between if headers existed.
+  export headers="${headers}${headers:+${NL}}$1"
 }
 
 content_type() {
   export content_type="$1"
   log 6 '-echo "Set content type to $content_type"'
+}
+
+content_length() {
+	export content_length="$1"
+	log 6 '-echo "Set content length to $content_length"'
 }
 
 # Redirects request.
@@ -106,14 +111,15 @@ redirect() {
   #header "Status: $STATUS"
   header "Location: $location"
   export redirected="$location"
-  headers
+  # Moving headers to somewhere downstream.
+  #headers
 } >&100
 
 # This is main render, called from the app or controller.
 # Usage: render <view> <layout>
 #render info layout
 render() {
-  # Fork stubshell for each render() function, so current template,
+  # Fork subshell for each render() function, so current template,
   # which must be global, doesn't get confused when calling sub-render functions.
   # TODO: Is this subshelling still necessary with new architecture.
   (
@@ -127,7 +133,8 @@ render() {
 
     if [ ! -z "$layout" ]; then
       #export top_level_template="$template"
-      headers   #| tee -a /root/haserl_framework_app/debug_headers.log
+      # Moving headers to somewhere downstream.
+      #headers   #| tee -a /root/haserl_framework_app/debug_headers.log
       log 5 '-echo "Calling haserl layout with $APPDIR/views/$layout"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$layout"
     else
@@ -149,7 +156,8 @@ yield() {
 output() {
   log 5 'Running output()'
   local data="${1:-$(cat -)}"
-  headers
+  # Moving headers to somewhere downstream.
+  #headers
   printf '%s' "$data"
 } >&100
 
@@ -170,6 +178,7 @@ set_cookie() {
   local name="$1"
   local data="$2"
   log 6 '-echo "Called set_cookie with $name $data"'
+	# In ash (and bourne) shell, position param ranges ${*:2} do not work.
   shift; shift;
   local enc_cookie_data=$(printf '%s' "$data" | encrypt)
   local cookie_params=$(for x in $@; do printf '; %s' "$x"; done)
@@ -284,10 +293,28 @@ setup() {
   is_setup=true
 }
 
+run_before() {
+  if [ ! -z "$run_before" ]; then
+    log 5 "Running 'before' actions"
+    log 6 "Before actions to run: $run_before"
+    #printf 'RUN_BEFORE:\n%s\nEND_RUN_BEFORE\n' "$run_before" >&2
+    eval "$run_before"
+  fi
+}
+
+run_after() {
+  if [ ! -z "$run_after" ]; then
+    log 5 "Running 'after' actions"
+    log 6 "After actions to run: $run_after"
+    #printf 'RUN_AFTER:\n%s\nEND_RUN_AFTER\n' "$run_after" >&2
+    eval "$run_after"
+  fi
+}
+
 # Runs the action after routes have been defined by user.
 # Expects request env vars to be populated already.
 #
-#	For safety, normal stdout of the run() function is redirected to $ROGUE_OUTPUT fd (defaults to '104').
+# For safety, normal stdout of the run() function is redirected to $ROGUE_OUTPUT fd (defaults to '104').
 # All client-bound output during the run() func should be sent to >&100.
 # Use stderr during the request 'run' for all messages that should be sent back to server stdout or log.
 # User-space functions like render(), output(), redirect(), etc all send output to >&100 by default.
@@ -310,117 +337,147 @@ run() {
     path_info='/'
   fi
 
-	export STATUS="${STATUS:-200 OK}"
-  
-  # Serves static assets.
-  # NOTE: Experimental, this does not server the assets properly yet.
-  if [ -f "${PUBLICDIR}${path_info}" ]; then
-    log 4 '-echo "Serving static asset ${PUBLICDIR}${path_info}"'
-    #header "Content-Type: application/octet-stream"
-		content_type 'application/octet-stream'
-    headers >&100
-    cat "${PUBLICDIR}${path_info}" >&100
-    return 0
-  fi
-   
-   # Selects matching PATH_INFO and REQUEST_METHOD (if request-method constraint is defined),
-   # then calls action associated with route.
-   # Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
-   for i in $( seq 1 $(($action_index - 1)) ); do
-     eval "local match=\$action_match_$i"
-     eval "local code=\$action_code_$i"
-     eval "local method=\$action_method_$i"
-     #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
-    if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
-      run_before >&2
-      #echo "Test-error from just before (eval 'code') within run() function." >&2
-      if [ -z "$redirected" -a $? = 0 ]; then
-        log 6 "Running action with match ($match) method ($method) code ($code)"
-        eval "$code"
-				# Should this final blank line be injected from some other function?
-        #printf '\r\n' >&100
-      fi
-      #echo "Some rogue text in the run() function"
-			if [ -z "$redirected" ]; then
-	      run_after >&2
-			fi
-      return 0
-     fi
-   done
+  export STATUS="${STATUS:-200 OK}"
 
-   # If no path-info matches a defined route, output a generic response,
-   # and then return 1.
-   content_type 'text/plain'
-   #headers
-   #echo "Error: action failed"
-   #echo "$!"
-	 STATUS='404 Not Found'
-   output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'\
-   $1"
-   return 1
+	if [ -f "${PUBLICDIR}${path_info}" ]; then
+		send_static_asset "${PUBLICDIR}${path_info}"
+	elif local matched_action=$(select_matching_action "$path_info"); then
+		call_action "$matched_action"
+	else
+		send_404
+	fi
+  
+  # # Serves static assets.
+  # # NOTE: Experimental, this does not serve the assets properly yet.
+  # if [ -f "${PUBLICDIR}${path_info}" ]; then
+  #   log 4 '-echo "Serving static asset ${PUBLICDIR}${path_info}"'
+  #   #header "Content-Type: application/octet-stream"
+  #   content_type 'application/octet-stream'
+  #   # Moving headers to somewhere downstream.
+  #   #headers >&100
+  #   cat "${PUBLICDIR}${path_info}" >&100
+  #   return 0
+  # fi
+	#
+  # # Selects matching PATH_INFO and REQUEST_METHOD (if request-method constraint is defined),
+  # # then calls action associated with route.
+  # # Any stdout here goes back to browser, but this loop doesn't generate any content iteself.
+  # for i in $( seq 1 $(($action_index - 1)) ); do
+  #   eval "local match=\$action_match_$i"
+  #   eval "local code=\$action_code_$i"
+  #   eval "local method=\$action_method_$i"
+  #   #if [ "$match" == "$path_info" ] && [ "$method" == "$REQUEST_METHOD" -o -z "$method" ]; then
+  #   if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
+  #     run_before >&2
+  #     #echo "Test-error from just before (eval 'code') within run() function." >&2
+  #     if [ -z "$redirected" -a $? = 0 ]; then
+  #       log 6 "Running action with match ($match) method ($method) code ($code)"
+  #       eval "$code"
+  #       # Should this final blank line be injected from some other function?
+  #       #printf '\r\n' >&100
+  #     fi
+  #     #echo "Some rogue text in the run() function"
+  #     if [ -z "$redirected" ]; then
+  #       run_after >&2
+  #     fi
+  #     return 0
+  #   fi
+  # done
+  # 
+  # # If no path-info matches a defined route, output a generic response,
+  # # and then return 1.
+  # content_type 'text/plain'
+  # #headers
+  # #echo "Error: action failed"
+  # #echo "$!"
+  # STATUS='404 Not Found'
+  # output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'\
+  # $1"
+  # return 1
+
 } 100>&1 1>&$ROGUE_OUTPUT
 
-run_before() {
-  if [ ! -z "$run_before" ]; then
-    log 5 "Running 'before' actions"
-    log 6 "Before actions to run: $run_before"
-    #printf 'RUN_BEFORE:\n%s\nEND_RUN_BEFORE\n' "$run_before" >&2
-    eval "$run_before"
+# Expects path-info on $1.
+select_matching_action() {
+	local path_info="${path_info:-$1}"
+	for i in $( seq 1 $(($action_index - 1)) ); do
+    eval "local match=\$action_match_$i"
+    eval "local code=\$action_code_$i"
+    eval "local method=\$action_method_$i"
+		if [ "$method" == "$REQUEST_METHOD" -o -z "$method" ] && match_url "$path_info" "$match"; then
+			printf '%s ' "$match" "$method" "$path_info"
+			printf '\n%s\n' "$code"
+			break
+		fi
+	done
+}
+
+# Expects input (match, method, pathinfo, code) on $1.
+call_action() {
+	local action_info=$(printf '%s' "$1" | head -n 1)
+	local action_code=$(printf '%s' "$1" | tail -n +2)
+	run_before >&2
+  if [ -z "$redirected" -a $? = 0 ]; then
+    log 6 "Running action with match, method, path_info ($action_info)"
+    eval "$action_code"
+  fi
+  #echo "Some rogue text in the run() function"
+  if [ -z "$redirected" ]; then
+    run_after >&2
   fi
 }
 
-run_after() {
-  if [ ! -z "$run_after" ]; then
-    log 5 "Running 'after' actions"
-    log 6 "After actions to run: $run_after"
-    #printf 'RUN_AFTER:\n%s\nEND_RUN_AFTER\n' "$run_after" >&2
-    eval "$run_after"
-  fi
+# Expects full-path on $1.
+send_static_asset() {
+	local full_path="${full_path:-$1}"
+	log 4 '-echo "Serving static asset $full_path"'
+  content_type 'application/octet-stream'
+  # Moving headers to somewhere downstream.
+  #headers >&100
+  cat "${full_path}" >&100
+}
+
+send_404() {
+	# If no path-info matches a defined route, output a generic response,
+  # and then return 1.
+  content_type 'text/plain'
+  #headers
+  #echo "Error: action failed"
+  #echo "$!"
+  STATUS='404 Not Found'
+  output "haserl_framework: an error occurred, or no action matched $REQUEST_METHOD '$PATH_INFO'."
 }
 
 # Formats & returns headers for output.
 # TODO: Create a clear framework-wide policy for handling headers. This is currently kinda messy.
 #       Dont modify headers or data, when headers() is called. Must be callable multiple times,
 #       for checking logging or user query.
-# headers() {
-#   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
-#   # and each header line should be terminated with \r\n.
-#   # printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
-#   header "Connection: close"
-#   export headers=$(printf '%s\r\n%sEEOOLL' "Content-Type: ${content_type:-text/html}" "$headers")
-#   if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
-#     headers=$( printf '%s\r\n%s' "HTTP/1.1 $STATUS" "$headers")
-# 	else
-# 		headers=$( printf '%s\r\n%s' "Status: $STATUS" "$headers")
-#   fi
-#   headers="${headers%EEOOLL}"
-#   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2
-#   printf '%s\r\n' "$headers"
-# }
-
 headers() {
   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
   # and each header line should be terminated with \r\n.
-	# TODO: Final output status should maybe be handled by run() or process_request().
+  # TODO: Final output status should maybe be handled by run() or process_request().
+  STATUS="${STATUS:-200 OK}"
   if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
     local status_header="HTTP/1.0 $STATUS"
-	else
-		local status_header="Status: $STATUS"
+  else
+    local status_header="Status: $STATUS"
   fi
-	# Should be valid HTTP-date format.
-	local date_header="Date: $(date -u +%a,\ %d\ %b\ %Y\ %H:%M:%S\ GMT)"
+  # Content-Length
+  local content_length_header="Content-Length: ${content_length:-$1}"
+  # Should be valid HTTP-date format.
+  local date_header="Date: $(date -u +%a,\ %d\ %b\ %Y\ %H:%M:%S\ GMT)"
   local keep_alive_header="${KEEP_ALIVE:-Connection: close}"
-	local content_type_header="Content-Type: ${content_type:-text/html}"
+  local content_type_header="Content-Type: ${content_type:-text/html}"
 
-	export OUTPUT_HEADERS=$(
-		printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$keep_alive_header" "$headers"
-		#printf '%s' "$headers"
-	)
-	
-	log 6 "OUTPUT_HEADERS:"
-	log 6 "${OUTPUT_HEADERS}"
-	
-	printf '%s\n\n' "${OUTPUT_HEADERS}" | sed 's/$/\r/'
+  export OUTPUT_HEADERS=$(
+    printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$content_length_header" "$keep_alive_header" "$headers"
+    #printf '%s' "$headers"
+  )
+  
+  log 6 "OUTPUT_HEADERS:"
+  log 6 "${OUTPUT_HEADERS}"
+  
+  printf '%s\n\n' "${OUTPUT_HEADERS}" | sed 's/$/\r/'
 
   #headers="${headers%EEOOLL}"
   #printf 'HEADERS:\n%s\nEND_HEADERS\n\n' "$headers" >&2

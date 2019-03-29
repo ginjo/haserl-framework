@@ -38,17 +38,17 @@
 #
 
 
-export FIFO_INPUT="${FIFO_INPUT:=/tmp/fifo_input}"
-export FIFO_OUTPUT="${FIFO_OUTPUT:=/tmp/fifo_output}"
-export FIFO_TOKEN="${FIFO_TOKEN:=/tmp/fifo_token}"
-export HASERL_ENV="${HASERL_ENV:=/tmp/haserl_env}"
-export PID_FILE="${PID_FILE:=/tmp/hf_server.pid}"
-export HF_DIRNAME="${HF_DIRNAME:=$(dirname $0)}"
-export HF_SERVER="${HF_SERVER:=$HF_DIRNAME/server.sh}"
-export SOCAT_ADDR="${SOCAT_ADDR:=tcp-l:1500,reuseaddr}"
+export FIFO_INPUT="${FIFO_INPUT:-/tmp/fifo_input}"
+export FIFO_OUTPUT="${FIFO_OUTPUT:-/tmp/fifo_output}"
+export FIFO_TOKEN="${FIFO_TOKEN:-/tmp/fifo_token}"
+export HASERL_ENV="${HASERL_ENV:-/tmp/haserl_env}"
+export PID_FILE="${PID_FILE:-/tmp/hf_server.pid}"
+export HF_DIRNAME="${HF_DIRNAME:-$(dirname $0)}"
+export HF_SERVER="${HF_SERVER:-$HF_DIRNAME/server.sh}"
+export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr}"
 # Still need to export this, even if default is null.
 # If using the CGI interface, you will need to set -t to something above default (0.5), try 1.
-export SOCAT_OPTS  #= "${SOCAT_OPTS:=-d -T60}"  
+export SOCAT_OPTS="${SOCAT_OPTS:--t2 -T60}"  
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -508,9 +508,25 @@ process_request() {
 	# 	printf '%s\n' "HTTP/1.1 ${status:-200 OK}"
 	# fi
 	
-	run
-	# TODO: Dunno if this is the right place for this.
-	printf '\r\n'
+	#run
+	eval_to_var run_result run
+	sleep 1
+	content_length "${#run_result}"
+	
+	headers
+	printf '%s' "$run_result"
+	
+	# # TODO: Dunno if this is the right place for this.
+	# # FIX:  The $(cmd-subst) creates a subshell around the entire run() function,
+	# #       making any env vars created or modified by run() invisible at this point.
+	# run | $(body=)
+	# local body_length="$((${#body}))"
+	# headers "$body_length"
+	# printf '%s' "$body"
+	
+	# This final output is only appropriate when a body is returned,
+	# but it is wrong for any reponses that are not supposed to have bodies (304, 307, etc..).
+	#printf '\r\n\0'
 	
 	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${REQUEST_URI:-REQUEST_URI N/A} $STATUS"
 	log 5 "End process_request"
@@ -574,6 +590,64 @@ sanitize_var_declaration() {
 	if [ -z "$1" ]; then cat; else echo "$1"; fi |
   sed "s/'/'\\\''/g; /^[^ \t]/{s/=/='/}; /[^\\]$/{s/$/'/}"
 }
+
+eval_to_var() {
+	echo "Eval_to_var args: $*" >&105
+	echo "Eval_to_var fd's: $(ls -l /proc/$$/fd/)" >&105
+	local var_name="$1"
+	
+	shift
+	echo "VAR: $var_name" >&105
+	echo "CMD: $*" >&105
+	
+	exec 15>&-
+	exec 16>&-
+	
+	id=$(IFS='.' read -r up rest </proc/uptime; echo "$up")
+	
+	local fifo_in="/tmp/fifo_in_$id"
+	local fifo_out="/tmp/fifo_out_$id"
+	echo "FIFO: $fifo_in $fifo_out" >&105
+	mkfifo "$fifo_in" "$fifo_out"
+	eval "exec 15<>$fifo_in"
+	eval "exec 16<>$fifo_out"
+	
+	# Buffer runs in background and reads data into var from fifo,
+	# then writes data out to fifo, so fifo won't block on their own buffer.
+	#
+	# This can be called as a function or as a simple command group,
+	# as long as it is run in the background.
+	#
+	# The subshell wrapper prevents annoying output "[1]+  Done..."
+	# after background process finishes.
+	#
+	(	#buffer &
+		{
+			local buf="$(sed '/__ENDOFDATA__/q' <&15)"
+			exec 15>&-
+			echo "BUF (0..16): ${buf:0:16}" | head -n1 >&105
+			printf '%s\n%s\n\n' "$buf" "__ENDOFDATA__" >&16
+		} &
+	)
+		
+	# Both \n\n are necessary or sed won't see the eof tag.
+	{ eval "$*"; printf '\n%s\n\n' "__ENDOFDATA__"; } >&15
+	echo "CMD sent data to fifo, now reading data into var '$var_name'" >&105
+	#local dat=$(sed '/^$/,/__ENDOFDATA__/q' <&6)
+	#local dat="$(cat <&6)"
+	local dat="$(sed -n '/__ENDOFDATA__/q;p' <&16)"
+		
+	echo "DAT (0..16): ${dat:0:16}" | head -n1 >&105
+	eval "$var_name"'="$dat"'
+	
+	exec 15>&-
+	exec 16>&-
+	rm -f "$fifo_in" "$fifo_out"
+	
+	eval 'echo "VAR $var_name (0..16): ${'"$var_name"':0:16}"' | head -n1 >&2
+}
+
+
 
 # Prints pids (current, parent, subshell). Show header row if $1 == true.
 get_pids() {
