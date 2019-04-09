@@ -121,8 +121,8 @@ redirect() {
 render() {
   # Fork subshell for each render() function, so current template,
   # which must be global, doesn't get confused when calling sub-render functions.
-  # TODO: Is this subshelling still necessary with new architecture.
-  #(
+  # This subshell is necessary for render/yield to work properly.
+  (
     if [ ! -z "$1" ]; then
       export template="${1}"
     fi
@@ -140,7 +140,7 @@ render() {
       log 5 '-echo "Calling haserl view with $APPDIR/views/$template"'
       echo "${REQUEST_BODY:-$POST_body}" | haserl "$APPDIR/views/$template"
     fi
-  #)
+  )
 } >&100
 
 yield() {
@@ -341,7 +341,7 @@ run() {
 			log 5 '-echo "Sending static asset ${PUBLICDIR}${path_info}"'
 			send_static_asset "${PUBLICDIR}${path_info}"
 		elif local matched_action=$(select_matching_action "$path_info"); then
-			log 5 '-echo "Calling call_action with $matched_action"'
+			log 5 '-echo "Calling call_action with $matched_action" | head -n1'
 			call_action "$matched_action"
 		else
 			log 5 'Sending 404'

@@ -45,9 +45,9 @@ export HASERL_ENV="${HASERL_ENV:-/tmp/haserl_env}"
 export PID_FILE="${PID_FILE:-/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:-$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:-$HF_DIRNAME/server.sh}"
-export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr}"
+export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr,shut-null,null-eof}"
 # Still need to export this, even if default is null.
-# If using the CGI interface, you will need to set -t to something above default (0.5), try 1.
+# If using the CGI interface, you will need to set -t to something above default (0.5), try 1 or 2.
 export SOCAT_OPTS="${SOCAT_OPTS:--t2 -T60}"  
 
 # Loads logging.
@@ -266,6 +266,8 @@ handle_socat_loop() {
 		fi
 		
 		log 5 "Handle_socat_loop receiving request in (/proc/$token/fd/) ($display_pids)"
+		# This is the main request subshell. Anything that happens in here should not
+		# affect variables or environment of the main process.
 		(
 			# Get stdin/out from socat-created pipes.
 			exec 0</proc/${token}/fd/0
@@ -283,7 +285,10 @@ handle_socat_loop() {
 			# This is needed to close out the socat 'system' subshell when using http or scgi interface,
 			# since no sockets ever report EOF in this situation (and thus the need to keep the subshell open aritificially).
 			log 5 '-echo "Killing socat system subshell (token $token)"'
-			kill -1 "${token}"
+			# This kill is necessary, if the response doesn't trigger the client to release the connection.
+			# If you always have a content-length header, you shouldn't need this (I don't think).
+			# Hmmm... still seems to be necessary for the scgi interface. Not sure why.
+			kill -1 "${token}" >&2
 		) &
 	done
 }
@@ -311,7 +316,7 @@ handle_request() {
 			handle_scgi "$line"
 			#break
 		#elif printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE).*HTTP'; then
-		elif printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE) '; then
+		elif printf '%s' "$line" | grep -qE '^(GET|POST|PUT|DELETE|HEAD) '; then
 			log 5 '-echo "Calling handle_http with ($line)"'
 			handle_http "$line"
 			#break
@@ -319,6 +324,8 @@ handle_request() {
 			log 5 '-echo "Calling handle_cgi with ($line)"'
 			handle_cgi "$line"
 			#break
+		#elif
+			# TODO: Abort with 5XX error if end of first line.
 		else
 			log 6 '-echo "No handler found yet for request beginning with:$line"'
 			continue
@@ -515,7 +522,7 @@ process_request() {
 		content_length "${#run_result}"
 		headers
 		log 6 "Run_result: $run_result"
-		printf '%s\n' "$run_result"
+		[ ! "$REQUEST_METHOD" == "HEAD" ] && printf '%s\n' "$run_result"
 	}
 	
 	# # TODO: Dunno if this is the right place for this.
@@ -598,7 +605,7 @@ eval_to_var() {
 	local var_name="$1"
 	
 	shift
-	log 5 "VAR: $var_name"
+	log 5 '-echo "VAR: $var_name"'
 	log 5 "CMD: $*"
 	
 	exec 15>&-
@@ -608,13 +615,13 @@ eval_to_var() {
 	
 	local fifo_in="/tmp/fifo_in_$id"
 	local fifo_out="/tmp/fifo_out_$id"
-	log 5 "FIFO: $fifo_in $fifo_out"
+	log 5 '-echo "FIFO: $fifo_in $fifo_out"'
 	mkfifo "$fifo_in" "$fifo_out"
 	eval "exec 15<>$fifo_in"
 	eval "exec 16<>$fifo_out"
 	
 	local ss_pid=$(exec sh -c 'echo "$PPID"')
-	log 6 "Eval_to_var FDs: $(ls -l /proc/$ss_pid/fd/)"
+	log 6 '-echo "Eval_to_var FDs: $(ls -l /proc/$ss_pid/fd/)"'
 	
 	# Buffer runs in background and reads data into var from fifo,
 	# then writes data out to fifo, so fifo won't block on their own buffer.
@@ -631,25 +638,25 @@ eval_to_var() {
 			# This filter keeps the endofdata tag but discards further lines.
 			local buf="$(sed '/__ENDOFDATA__/q' <&15)"
 			exec 15>&-
-			#log 6 "BUF (0..16): ${buf:0:16}"    #| head -n1 >&105
+			log 6 '-echo "BUF (0..16): ${buf:0:16} | head -n1"'
 			printf '%s\n%s\n\n' "$buf" "__ENDOFDATA__" >&16
 		} &
 	)
 		
 	# Both \n\n are necessary or sed won't see the eof tag.
 	{ eval "$*"; printf '\n%s\n\n' "__ENDOFDATA__"; } >&15
-	log 5 "CMD sent data to fifo, now reading data into var '$var_name'"
+	log 6 "CMD sent data to fifo, now reading data into var '$var_name'"
 	# This filter will discard the endofdata tag and all lines beyond it.
 	local dat="$(sed -n '/__ENDOFDATA__/q;p' <&16)"$'\n'
 		
-	#log 6 "DAT (0..16): ${dat:0:16}"  #| head -n1 >&105
+	log 6 '-echo "DAT (0..16): ${dat:0:16}" | head -n1'
 	eval "$var_name"'="$dat"'
 	
 	exec 15>&-
 	exec 16>&-
 	rm -f "$fifo_in" "$fifo_out"
 	
-	eval 'echo "VAR $var_name (0..16): ${'"$var_name"':0:16}"' | head -n1 >&2
+	log 6 '-echo "VAR $var_name (0..16): ${'"$var_name"':0:16}" | head -n1'
 }
 
 
