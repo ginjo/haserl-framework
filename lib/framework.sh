@@ -405,8 +405,7 @@ send_404() {
 
 # Formats & returns headers for output.
 # TODO: Create a clear framework-wide policy for handling headers. This is currently kinda messy.
-#       Dont modify headers or data, when headers() is called. Must be callable multiple times,
-#       for checking logging or user query.
+#
 headers() {
   # According to RFC 2616, proper header-block termination should be \r\n\r\n,
   # and each header line should be terminated with \r\n.

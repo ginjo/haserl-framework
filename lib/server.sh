@@ -294,7 +294,7 @@ handle_socat_loop() {
 }
 
 # Handles request from socat server.
-# Expects data to be on stdin.
+# Expects all data to be on stdin, except for optional first-line on $1.
 # Stdout goes out stdout, back to request loop, then out to client.
 handle_request() {
 	local start_time="$(timer)"
@@ -398,44 +398,6 @@ handle_http(){
 	log 5 "End handle_http"
 } # Stdout goes back to socat server. Do not redirect.
 
-# This accepts and handles cgi input containing env vars.
-handle_cgi(){
-	log 5 "Begin handle_cgi with '$1' ($(get_pids))"
-	# All stdout in this block gets sent to process_request()
-	inpt=$({
-
-		printf '%s' "$1"
-
-
-		log 5 "Reading cgi input (env vars) from stdin."
-		# FIX: This doesn't ever return now.
-		#cat #| tee /tmp/log_106
-		
-		# This is necessary, because otherwise reading from stdin hangs.
-		# This happens when pushing env vars from a cgi script to this app
-		# using nc, socat, or directlly via fifo.
-		# If receiving these cgi/haserl requests over the socat interface,
-		# you may also need to adjust -t and -T on that interface using $SOCAT_OPTS.
-		socat -u -T0.2 - -
-		
-		export -p
-		
-		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
-		# otherwise the response gets back to the client before
-		# the data can be processed, and the client disconnects.
-	}) #| process_request
-
-	log 5 'Calling process_request with cgi input'
-	echo "$inpt" | process_request
-	
-	log 5 "End handle_cgi"
-} # Stdout goes back to socat server. Do not redirect.
-
-# OLD:
-# #alias handle_cgi='handle_http()'
-# handle_cgi() { handle_http "$@"; }
-# #alias handle_cgi='handle_http'
-
 # Accepts and parses SCGI input on stdin, and sends it to process_request.
 # Respons from process_request is returned on stdout to upstream handle_request.
 # This function expects $1 containing the total num of characters in the scgi headers.
@@ -496,9 +458,42 @@ handle_scgi() {
 	log 5 "End handle_scgi"
 } # Stdout goes back to socat server. Do not redirect.
 
+# This accepts and handles cgi input containing env vars.
+handle_cgi(){
+	log 5 "Begin handle_cgi with '$1' ($(get_pids))"
+	# All stdout in this block gets sent to process_request()
+	inpt=$({
+
+		printf '%s' "$1"
+
+
+		log 5 "Reading cgi input (env vars) from stdin."
+		# FIX: This doesn't ever return now.
+		#cat #| tee /tmp/log_106
+		
+		# This is necessary, because otherwise reading from stdin hangs.
+		# This happens when pushing env vars from a cgi script to this app
+		# using nc, socat, or directlly via fifo.
+		# If receiving these cgi/haserl requests over the socat interface,
+		# you may also need to adjust -t and -T on that interface using $SOCAT_OPTS.
+		socat -u -T0.2 - -
+		
+		export -p
+		
+		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
+		# otherwise the response gets back to the client before
+		# the data can be processed, and the client disconnects.
+	}) #| process_request
+
+	log 5 'Calling process_request with cgi input'
+	echo "$inpt" | process_request
+	
+	log 5 "End handle_cgi"
+} # Stdout goes back to socat server. Do not redirect.
+
 # Parses & evals the request env passed thru stdin, and calls the framework action(s).
 # Stdout will be sent back to request handler via stdout.
-# Expects a LF delimited list of env variable definitions with single-quoted data, on stdin.
+# Expects a LF delimited list of env variable definitions with single-quoted data on stdin.
 # Example: export MY_VAR='hey there'
 process_request() {
 	log 5 '-echo "Begin process_request ($(get_pids))"'
@@ -566,7 +561,7 @@ evalable_env_from_input() {
 }
 
 # Evals env returned from simple haserl call.
-# No input, execpts exising env vars.
+# No input, expects and uses exising env vars.
 eval_haserl_env() {
 	{
 		log 5 '-echo "Evaling current env with haserl ($(get_pids))"'
@@ -580,10 +575,21 @@ eval_haserl_env() {
 }
 
 # Converts line(s) of http header to 'export VAR_NAME=<data>', and evals it.
+# Expects input on $1.
 # NOTE: Dont do this in a subshell from its caller, or it won't stick.
+# TODO: Consider breaking awk one-liner into multiple lines, to make it easier to modify/maintain.
 http_header_to_env_var() {
 	local inpt="$1"
-	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' )
+	log 6 '-echo "http_header_to_env_var receiving input: $inpt"'
+	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' | sed 's/HTTP__//')
+	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | \
+		awk -F': ' '
+			/^([[:alnum:]_-]+)(: )(.+)$/ {
+				gsub(/-/, "_", $1);
+				print "export HTTP_"toupper($1)"='\''"$2"'\''"
+			}
+		' | sed 's/HTTP__//'
+	)
 	log 6 '-echo "Defining env var from http headers: $rslt"'
 	eval "$rslt"	
 }
@@ -595,11 +601,15 @@ http_header_to_env_var() {
 #   Adds a quote at end of any line that doesn't end with '\'.
 # Taken from framework 'get_safe_fifo_input'
 # Can take data on $1 or stdin
+# NOTE: It's possible this may be obsolete.
+#
 sanitize_var_declaration() {
 	if [ -z "$1" ]; then cat; else echo "$1"; fi |
   sed "s/'/'\\\''/g; /^[^ \t]/{s/=/='/}; /[^\\]$/{s/$/'/}"
 }
 
+# Evals any given command+args and stores result in given var.
+# Usage: eval_to_var <var-name> <command> [args...]
 eval_to_var() {
 	log 5 "Eval_to_var args: $*"
 	local var_name="$1"
