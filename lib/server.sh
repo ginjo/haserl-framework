@@ -133,6 +133,8 @@ socat_server(){
 	} >&103 2>&22  # Othwerwise, socat spits out too much data.
 }
 
+# Handles raw requests thru fifo IO.
+# TODO: This is deprecated and should be removed.
 request_loop() {
 	# NOTE: To properly read chrs or lines from a fifo, you should perform all reading
 	# within a subshell with input redirected from fifo. That way, the fifo won't close until you're done.
@@ -205,21 +207,9 @@ request_loop() {
 	exec 0<&-
 }
 
-# handle_socat_loop_simple() {
-# 	log 5 "Waiting for request"
-# 	IFS= read -rn1 chr
-# 	if [ "${chr/[^a-zA-Z1-9_]/DROP}" == 'DROP' ]; then
-# 		log 3 "Unexpected character ($chr) received at beginning of request loop ($(get_pids))"
-# 		continue
-# 	fi
-# 	log 5 '-echo "Read $chr from socat loop, sending control to handle_request"'
-# 	
-# 	handle_request "$chr"
-# 	# Not clear if this EOF helps or not.
-# 	printf '\0'
-# }
 
 # # With fifo IO.
+# # TODO: I think this is obsolete and should be removed.
 # handle_socat_loop() {
 # 	while :; do
 # 		log 5 "Listening for input from socat loop ($(get_pids))"
@@ -275,7 +265,7 @@ handle_socat_loop() {
 			handle_request #</proc/${token}/fd/0 >/proc/${token}/fd/1
 			
 			# Is this null byte necessary?
-			printf '\0'
+			#printf '\0'
 			
 			log 5 "Handle_socat_loop cleannig after handle_request for token ($token)"
 			# Close stdin/out
@@ -351,7 +341,7 @@ handle_request() {
 handle_http(){
 	log 5 "Begin handle_http with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
-	inpt=$({
+	#inpt=$({
 		local line=''
 		local len=0
 		IFS= read -r line
@@ -374,22 +364,29 @@ handle_http(){
 			#[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
 			# We don't want to print http headers here, but we do want to translate them into env vars.
 			#printf '%s\n' "$line"
-			http_header_to_env_var "$line"
+			#http_header_to_env_var "$line
+			inpt="$inpt"$(http_header_to_env_var "$line")$'\n'''
 		done
 		
-		export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$HTTP_SCRIPT_NAME}}"
+		export GATEWAY_INTERFACE='HTTP'
 		
+		# # TODO: I think this can be moved upstream to process_request() function,
+		# # where it can be used for all 3 input interfaces instead of just this one.
+		# export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$HTTP_SCRIPT_NAME}}"
+		
+		# TODO: This is used to extract body content from input, when it exists,
+		# but this is broken since $len is no longer calculated as it was above.
 		if [ $(($len)) -gt 0 ]; then
 			log 6 '-echo "Calling head on stdin with -c $len"'
 			head -c $(($len))
 		fi
 
-		export -p
+		#export -p
 		
 		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
 		# otherwise the response gets back to the client before
 		# the data can be processed, and the client disconnects.
-	}) #| process_request
+	#}) #| process_request
 	
 	log 5 'Calling process_request with http input'
 	log 6 '-echo "Http input sent to process_request: $inpt"'
@@ -420,6 +417,8 @@ handle_scgi() {
 			sed '$!N;'"s/\n/='/;s/$/'/"
 		)
 		
+		export GATEWAY_INTERFACE='SCGI'
+		
 		# Drops the last 1 chrs from stdin (I think they were ',')
 		# TODO: Is the request body being damaged by this? YES!
 		# TODO: Find a less hacky place/way to do this.
@@ -439,6 +438,7 @@ handle_scgi() {
 		eval "$content_length_header"
 	
 		# Gets remaining stdin containing request body, if exists.
+		# We use dd here cuz we might want to skip one or more bytes.
 		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
 			log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
 			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
@@ -449,10 +449,11 @@ handle_scgi() {
 	} >&2 #>/tmp/log_103  #>&103
 	
 	# Outputs scgi env and local env to process_request.
-	log 5 "Printing scgi_headers and exported env to process_request"
+	log 5 "Printing scgi_headers to process_request"
 	{
 		printf '%s\n' "$scgi_headers"
-		export -p
+		# I don't think we need to export env vars.
+		#export -p
 	} | process_request
 	
 	log 5 "End handle_scgi"
@@ -478,12 +479,14 @@ handle_cgi(){
 		# you may also need to adjust -t and -T on that interface using $SOCAT_OPTS.
 		socat -u -T0.2 - -
 		
-		export -p
+		#export -p
 		
 		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
 		# otherwise the response gets back to the client before
 		# the data can be processed, and the client disconnects.
 	}) #| process_request
+	
+	export GATEWAY_INTERFACE='CGI'
 
 	log 5 'Calling process_request with cgi input'
 	echo "$inpt" | process_request
@@ -501,6 +504,9 @@ process_request() {
 	
 	eval_input_env #"$input_env"
 	unset TERMCAP
+	
+	export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$HTTP_SCRIPT_NAME}}"
+	
 	eval_haserl_env
 	log 6 '-echo "Calling run() with env: $(env)"'
 
@@ -514,7 +520,11 @@ process_request() {
 	#run
 	{
 		eval_to_var run_result run
+		# I removed the final null-byte and added +1 here, but it doesn't always match the actual body content length.
+		# The content-length header returned to client should always match the socat body length
+		# reported in the socat log (using -v).
 		content_length "${#run_result}"
+		#content_length "$((${#run_result} + 1))"
 		headers
 		log 6 "Run_result: $run_result"
 		[ ! "$REQUEST_METHOD" == "HEAD" ] && printf '%s\n' "$run_result"
@@ -577,7 +587,11 @@ eval_haserl_env() {
 # Converts line(s) of http header to 'export VAR_NAME=<data>', and evals it.
 # Expects input on $1.
 # NOTE: Dont do this in a subshell from its caller, or it won't stick.
-# TODO: Consider breaking awk one-liner into multiple lines, to make it easier to modify/maintain.
+#
+# TODO (or maybe not): Genericize this so it only converts http headers to env vars, nothing else.
+# Move the rewrite functionality to its own function, and call it somwhere
+# in the process_request() function.
+#
 http_header_to_env_var() {
 	local inpt="$1"
 	log 6 '-echo "http_header_to_env_var receiving input: $inpt"'
@@ -591,7 +605,8 @@ http_header_to_env_var() {
 		' | sed 's/HTTP__//'
 	)
 	log 6 '-echo "Defining env var from http headers: $rslt"'
-	eval "$rslt"	
+	#eval "$rslt"
+	printf '%s' "$rslt"
 }
 
 # Filters fifo-input env string, so it can be eval'd safely.
@@ -681,6 +696,13 @@ get_pids() {
 sspid() {
 	echo $(exec sh -c 'echo "$PPID"')
 }
+
+# uuid() {
+# 	local length="${1:-16}"
+# 	local overkill="${2:-8}"
+# 	local raw_len=$(($length * $overkill))
+# 	head -c "$raw_length" /dev/urandom | tr -dc 'a-zA-Z0-9' | cut -c 0-$(($length))
+# }
 
 # # Passes stdin (env list) to daemon via fifo,
 # # Receives response via private fifo.

@@ -271,6 +271,15 @@ cookie_unsafe() {
 #   printf "$rslt"
 # }
 
+# Experimental uuid function.
+uuid() {
+	local length="${1:-16}"
+	local overkill="${2:-8}"
+	local raw_len=$(($length * $overkill))
+	log 6 "uuid() generating string ($length) from raw chrs ($raw_len)"
+	head -c $(($raw_len)) /dev/urandom | tr -dc 'a-zA-Z0-9' | cut -c 0-$(($length))
+}
+
 
 ##### Internal Setup & Server Functions #####
 
@@ -417,14 +426,18 @@ headers() {
     local status_header="Status: $STATUS"
   fi
   # Content-Length
-  local content_length_header="Content-Length: ${content_length:-$1}"
+	if [ "$GATEWAY_INTERFACE" == 'HTTP' ]; then
+	  local content_length_header="Content-Length: ${content_length:-$1}"
+	fi
   # Should be valid HTTP-date format.
   local date_header="Date: $(date -u +%a,\ %d\ %b\ %Y\ %H:%M:%S\ GMT)"
-  local keep_alive_header="${KEEP_ALIVE:-Connection: close}"
+	# Nginx (or uhttpd?) doesn't recognize a custom Connection header, so you end up with two
+  #local keep_alive_header="${KEEP_ALIVE:-Connection: close}"
   local content_type_header="Content-Type: ${content_type:-text/html}"
 
   export OUTPUT_HEADERS=$(
-    printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$content_length_header" "$keep_alive_header" "$headers"
+		printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$content_length_header" "$keep_alive_header" "$headers" | sed '/^$/d'
+    #printf '%s\n' "$status_header" "$date_header" "$content_type_header" "$content_length_header" "$headers"
     #printf '%s' "$headers"
   )
   
