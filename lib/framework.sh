@@ -87,12 +87,12 @@ header() {
 
 content_type() {
   export content_type="$1"
-  log 6 '-echo "Set content type to $content_type"'
+  log 6 '-echo "Setting content type to $content_type"'
 }
 
 content_length() {
 	export content_length="$1"
-	log 6 '-echo "Set content length to $content_length"'
+	log 6 '-echo "Setting content length to $content_length"'
 }
 
 # Redirects request.
@@ -331,13 +331,15 @@ run_after() {
 run() {
   log 5 "Beginning run()"
   # Experimental set PATH_INFO to '/' under certain circumstances.
-  if [ "$REQUEST_URI" = "$SCRIPT_NAME/" ]; then
+  if [ "$REQUEST_URI" == "$SCRIPT_NAME/" ]; then
+		log 6 'Resetting PATH_INFO to /'
     export PATH_INFO='/'
   fi
   
   # This is needed for when path-info is empty or '/'.
   # PATH_INFO will be null even if request is '/' (at least in openwrt).
   # The above PATH_INFO modification may make this following bit obsolete.
+	log 6 '-echo "Setting local path_info to PATH_INFO: $PATH_INFO"'
   local path_info="$PATH_INFO"
   if [ -z "$path_info" ]; then
     path_info='/'
@@ -386,6 +388,7 @@ call_action() {
     eval "$action_code"
   fi
   #echo "Some rogue text in the run() function"
+	# TODO: Should after-scripts be run after a redirect?
   if [ -z "$redirected" ]; then
     run_after >&2
   fi
@@ -420,14 +423,15 @@ headers() {
   # and each header line should be terminated with \r\n.
   # TODO: Final output status should maybe be handled by run() or process_request().
   STATUS="${STATUS:-200 OK}"
-  if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
+  if echo "$GATEWAY_INTERFACE" | grep -qEv '^(CGI|SCGI)' ; then
     local status_header="HTTP/1.0 $STATUS"
   else
     local status_header="Status: $STATUS"
   fi
   # Content-Length
-	if [ "$GATEWAY_INTERFACE" == 'HTTP' ]; then
-	  local content_length_header="Content-Length: ${content_length:-$1}"
+	if [ ! "${GATEWAY_INTERFACE%%/*}" == 'CGI' -a -z "$redirected" ]; then
+	#if [ -z "$redirected" ]; then
+	  local content_length_header="Content-Length: ${content_length:-0}"
 	fi
   # Should be valid HTTP-date format.
   local date_header="Date: $(date -u +%a,\ %d\ %b\ %Y\ %H:%M:%S\ GMT)"

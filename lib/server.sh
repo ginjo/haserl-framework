@@ -433,9 +433,9 @@ handle_scgi() {
 		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
 		
 		# Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
-		local content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
-		log 6 '-echo "Scgi body content length declaration $content_length_header"'
-		eval "$content_length_header"
+		local scgi_content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
+		log 6 '-echo "Scgi body content length declaration $scgi_content_length_header"'
+		eval "$scgi_content_length_header"
 	
 		# Gets remaining stdin containing request body, if exists.
 		# We use dd here cuz we might want to skip one or more bytes.
@@ -494,9 +494,10 @@ handle_cgi(){
 	log 5 "End handle_cgi"
 } # Stdout goes back to socat server. Do not redirect.
 
-# Parses & evals the request env passed thru stdin, and calls the framework action(s).
+# Parses & evals the request env passed thru stdin (and existing env vars),
+# and calls the framework action(s).
 # Stdout will be sent back to request handler via stdout.
-# Expects a LF delimited list of env variable definitions with single-quoted data on stdin.
+# Expects a LF delimited list of env variable definitions with single-quoted data, on stdin.
 # Example: export MY_VAR='hey there'
 process_request() {
 	log 5 '-echo "Begin process_request ($(get_pids))"'
@@ -505,7 +506,10 @@ process_request() {
 	eval_input_env #"$input_env"
 	unset TERMCAP
 	
-	export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$HTTP_SCRIPT_NAME}}"
+	# Omitting the colon in parameter expansion means test only for unset param.
+	# Leaving the colon would test also for null param.
+	# We don't want to modify a null PATH_INFO, so we omit the colon.
+	export PATH_INFO="${PATH_INFO-${REQUEST_URI#$SCRIPT_NAME}}"
 	
 	eval_haserl_env
 	log 6 '-echo "Calling run() with env: $(env)"'
@@ -523,11 +527,11 @@ process_request() {
 		# I removed the final null-byte and added +1 here, but it doesn't always match the actual body content length.
 		# The content-length header returned to client should always match the socat body length
 		# reported in the socat log (using -v).
-		content_length "${#run_result}"
-		#content_length "$((${#run_result} + 1))"
+		#content_length "${#run_result}"
+		content_length "$((${#run_result} + 1))"
 		headers
 		log 6 "Run_result: $run_result"
-		[ ! "$REQUEST_METHOD" == "HEAD" ] && printf '%s\n' "$run_result"
+		[ ! "$REQUEST_METHOD" == "HEAD" -a -z "$redirected" ] && printf '%s\n' "$run_result"
 	}
 	
 	# # TODO: Dunno if this is the right place for this.
@@ -542,7 +546,7 @@ process_request() {
 	# but it is wrong for any reponses that are not supposed to have bodies (304, 307, etc..).
 	#printf '\r\n\0'
 	
-	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${REQUEST_URI:-REQUEST_URI N/A} $STATUS"
+	log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${PATH_INFO:-PATH_INFO N/A} $STATUS"
 	log 5 "End process_request"
 } # Stdout returns to request handler, do not redirect.
 
@@ -550,12 +554,12 @@ process_request() {
 # then evals each of those lines.
 # Expects input on stdin.
 eval_input_env() {
-	log 5 '-echo "Evaling input env vars ($(get_pids))"'
+	log 5 'Evaling input env vars'
 	{
-		#local evalable_input=$(evalable_env_from_input "$1")
+		local inpt="$(evalable_env_from_input)"
 		set -a
-		#eval "$evalable_input"
-		eval "$(evalable_env_from_input)"
+		log 6 '-echo "Evalable-env-from-input: $inpt"'
+		eval "$inpt"
 		set +a
 	} >&2
 }
@@ -566,7 +570,6 @@ eval_input_env() {
 # FIX: This breaks if any values contain an unescaped literal newline.
 #      Literal new lines should be backslash-escaped.
 evalable_env_from_input() {
-	#echo "$1" | sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 	sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 }
 
