@@ -344,6 +344,8 @@ handle_http(){
 	#inpt=$({
 		local line=''
 		local len=0
+		local inpt_headers
+		local inpt=''
 		IFS= read -r line
 		local first_line="$1$line"
 		
@@ -358,6 +360,9 @@ handle_http(){
 		#export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$}"
 		export REQUEST_METHOD=$(echo "$first_line" | sed 's/^\([[:alpha:]]\+\) [^ ]\+ .*$/\1/')
 		log 5 "Reading raw http headers from stdin."
+
+		# TODO: Since disabling the following steps that set $len, request bodies are broken.
+		#
 		while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
 			IFS= read -r line
 			# I think this is now handled in http_header_to_env_var.
@@ -365,8 +370,15 @@ handle_http(){
 			# We don't want to print http headers here, but we do want to translate them into env vars.
 			#printf '%s\n' "$line"
 			#http_header_to_env_var "$line
-			inpt="$inpt"$(http_header_to_env_var "$line")$'\n'''
+			#inpt="$inpt"$(http_header_to_env_var "$line")$'\n'''
+			inpt_headers="$inpt_headers""$line"$'\n'
 		done
+		inpt=$(http_header_to_env_var "$inpt_headers")
+
+		# # NOTE: This does not work, since sed discards unused stdin!
+		# local header_inpt="$(sed '/^\r*$/q')$'\n'"
+		# log 6 '-echo "Received http headers on stdin: $header_inpt"'
+		# local inpt=$(http_header_to_env_var "$header_inpt")
 		
 		export GATEWAY_INTERFACE='HTTP'
 		
@@ -376,9 +388,13 @@ handle_http(){
 		
 		# TODO: This is used to extract body content from input, when it exists,
 		# but this is broken since $len is no longer calculated as it was above.
-		if [ $(($len)) -gt 0 ]; then
-			log 6 '-echo "Calling head on stdin with -c $len"'
-			head -c $(($len))
+		# if [ $(($len)) -gt 0 ]; then
+		# 	log 6 '-echo "Calling head on stdin with -c $len"'
+		# 	head -c $(($len))
+		# fi
+		if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
+			log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
+			head -c $(($HTTP_CONTENT_LENGTH))
 		fi
 
 		#export -p
@@ -552,11 +568,11 @@ process_request() {
 
 # Filters input for only single-quoted safely evalable var definitions,
 # then evals each of those lines.
-# Expects input on stdin.
+# Expects input on stdin or $1.
 eval_input_env() {
 	log 5 'Evaling input env vars'
 	{
-		local inpt="$(evalable_env_from_input)"
+		local inpt="$(evalable_env_from_input $1)"
 		set -a
 		log 6 '-echo "Evalable-env-from-input: $inpt"'
 		eval "$inpt"
@@ -566,10 +582,15 @@ eval_input_env() {
 
 # Filters evalable env code from stdin (var='anything-but-literal-single-quote').
 # Does no modification of string.
-# Expects input string on stdin to be output from 'env' or 'export -p'.
+# Expects input string on stdin (or $1) to be output from 'env' or 'export -p'.
 # FIX: This breaks if any values contain an unescaped literal newline.
 #      Literal new lines should be backslash-escaped.
 evalable_env_from_input() {
+	if [ -z "$1" ]; then
+		cat -
+	else
+		printf '%s\n' "$1"
+	fi |
 	sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 }
 
@@ -590,10 +611,6 @@ eval_haserl_env() {
 # Converts line(s) of http header to 'export VAR_NAME=<data>', and evals it.
 # Expects input on $1.
 # NOTE: Dont do this in a subshell from its caller, or it won't stick.
-#
-# TODO (or maybe not): Genericize this so it only converts http headers to env vars, nothing else.
-# Move the rewrite functionality to its own function, and call it somwhere
-# in the process_request() function.
 #
 http_header_to_env_var() {
 	local inpt="$1"
