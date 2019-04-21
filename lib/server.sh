@@ -447,6 +447,7 @@ handle_scgi() {
 			dd count=$(($len)) bs=1 2>&106 |
 			tr '\0' '\n' |
 			sed '$!N;'"s/\n/='/;s/$/'/"
+			printf '\n'
 		)
 		
 		export GATEWAY_INTERFACE='SCGI'
@@ -464,29 +465,37 @@ handle_scgi() {
 		
 		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
 		
-		# Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
-		local scgi_content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
-		log 6 '-echo "Scgi body content length declaration $scgi_content_length_header"'
-		eval "$scgi_content_length_header"
-	
-		# Gets remaining stdin containing request body, if exists.
-		# We use dd here cuz we might want to skip one or more bytes.
-		if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
-			log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
-			export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
-			#echo "Request body: $REQUEST_BODY"
-		fi
+		### These are not used in the new scheme where headers are evald here, and body evaled in process_request().
+		# #
+		# # Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
+		# local scgi_content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
+		# log 6 '-echo "Scgi body content length declaration $scgi_content_length_header"'
+		# eval "$scgi_content_length_header"
+		# 	
+		# # Gets remaining stdin containing request body, if exists.
+		# # We use dd here cuz we might want to skip one or more bytes.
+		# if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
+		# 	log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
+		# 	export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
+		# 	#echo "Request body: $REQUEST_BODY"
+		# fi
+		
+		# Instead, we now do this:
+		# TODO: Split out awk stuff that prefixes http headers,
+		# into it's own function, so we can use it here.
+		eval_input_env "$scgi_headers"
 		
 		# All stdout from this grouping should go to log.
 	} >&2 #>/tmp/log_103  #>&103
 	
-	# Outputs scgi env and local env to process_request.
-	log 5 "Printing scgi_headers to process_request"
-	{
-		printf '%s\n' "$scgi_headers"
-		# I don't think we need to export env vars.
-		#export -p
-	} | process_request
+	# # Outputs scgi env and local env to process_request.
+	# log 5 "Printing scgi_headers to process_request"
+	# {
+	# 	printf '%s\n' "$scgi_headers"
+	# 	# I don't think we need to export env vars.
+	# 	#export -p
+	# } | process_request
+	process_request
 	
 	log 5 "End handle_scgi"
 } # Stdout goes back to socat server. Do not redirect.
@@ -740,6 +749,8 @@ eval_to_var() {
 	log 6 '-echo "VAR $var_name (0..16): ${'"$var_name"':0:16}" | head -n1'
 }
 
+# This is fabulous but is not currently used.
+# Usage: $1 is in $2 ?
 contains() {
     string="$2"
     substring="$1"
