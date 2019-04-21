@@ -46,6 +46,8 @@ export PID_FILE="${PID_FILE:-/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:-$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:-$HF_DIRNAME/server.sh}"
 export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr,shut-null,null-eof}"
+export PREFIX_HTTP_HEADERS
+export HTTP_HEADERS="${HTTP_HEADERS:-$( tr '\n' ' ' <$HF_DIRNAME/http_headers.txt | awk '{gsub(/-/,"'_'"); print toupper($0)}' )}"
 # Still need to export this, even if default is null.
 # If using the CGI interface, you will need to set -t to something above default (0.5), try 1 or 2.
 export SOCAT_OPTS="${SOCAT_OPTS:--t2 -T60}"  
@@ -342,9 +344,9 @@ handle_http(){
 	log 5 "Begin handle_http with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
 	#inpt=$({
-		local line=''
+		local line=''input_headers
 		local len=0
-		local inpt_headers
+		local input_headers
 		local inpt=''
 		IFS= read -r line
 		local first_line="$1$line"
@@ -365,22 +367,29 @@ handle_http(){
 		#
 		while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
 			IFS= read -r line
-			# I think this is now handled in http_header_to_env_var.
+			# I think this is now handled in http_headers_to_env_var.
 			#[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
 			# We don't want to print http headers here, but we do want to translate them into env vars.
 			#printf '%s\n' "$line"
-			#http_header_to_env_var "$line
-			#inpt="$inpt"$(http_header_to_env_var "$line")$'\n'''
-			inpt_headers="$inpt_headers""$line"$'\n'
+			#http_headers_to_env_var "$line
+			#inpt="$inpt"$(http_headers_to_env_var "$line")$'\n'''
+			input_headers="$input_headers""$line"$'\n'
 		done
-		inpt=$(http_header_to_env_var "$inpt_headers")
+		
+		export GATEWAY_INTERFACE='HTTP'
+		#inpt=$(http_headers_to_env_var "$input_headers")
+		local env_vars=$(http_headers_to_env_var "$input_headers")
+		# This is already logged in the above call to http_headers...
+		#log 6 '-echo "Env vars coded from http headers: $env_vars"'
+		eval_input_env "$env_vars"
 
 		# # NOTE: This does not work, since sed discards unused stdin!
 		# local header_inpt="$(sed '/^\r*$/q')$'\n'"
 		# log 6 '-echo "Received http headers on stdin: $header_inpt"'
-		# local inpt=$(http_header_to_env_var "$header_inpt")
+		# local inpt=$(http_headers_to_env_var "$header_inpt")
 		
-		export GATEWAY_INTERFACE='HTTP'
+		# Moved, see above.
+		#export GATEWAY_INTERFACE='HTTP'
 		
 		# # TODO: I think this can be moved upstream to process_request() function,
 		# # where it can be used for all 3 input interfaces instead of just this one.
@@ -388,14 +397,20 @@ handle_http(){
 		
 		# TODO: This is used to extract body content from input, when it exists,
 		# but this is broken since $len is no longer calculated as it was above.
+		# This was used when request-body was captured before sending to process_request().
+		# Now (experimental) request-body waiting on stdin is left as-is for process_request().
+		#
 		# if [ $(($len)) -gt 0 ]; then
 		# 	log 6 '-echo "Calling head on stdin with -c $len"'
 		# 	head -c $(($len))
 		# fi
-		if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
-			log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
-			head -c $(($HTTP_CONTENT_LENGTH))
-		fi
+		#
+		# or
+		#
+		# if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
+		# 	log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
+		# 	head -c $(($HTTP_CONTENT_LENGTH))
+		# fi
 
 		#export -p
 		
@@ -406,7 +421,8 @@ handle_http(){
 	
 	log 5 'Calling process_request with http input'
 	log 6 '-echo "Http input sent to process_request: $inpt"'
-	echo "$inpt" | process_request
+	#echo "$inpt" | process_request
+	process_request
 	
 	log 5 "End handle_http"
 } # Stdout goes back to socat server. Do not redirect.
@@ -519,7 +535,10 @@ process_request() {
 	log 5 '-echo "Begin process_request ($(get_pids))"'
 	#local input_env="$(cat -)"
 	
-	eval_input_env #"$input_env"
+	# This is handled in the request handlers now.
+	#eval_input_env #"$input_env"
+
+	# Disable unused, irrelevant, or troublesome env vars.
 	unset TERMCAP
 	
 	# Omitting the colon in parameter expansion means test only for unset param.
@@ -527,7 +546,14 @@ process_request() {
 	# We don't want to modify a null PATH_INFO, so we omit the colon.
 	export PATH_INFO="${PATH_INFO-${REQUEST_URI#$SCRIPT_NAME}}"
 	
+	if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
+		log 6 '-echo "Calling head on stdin with -c $CONTENT_LENGTH"'
+		export REQUEST_BODY="$( head -c $(($CONTENT_LENGTH)) )"
+	fi
+	
 	eval_haserl_env
+	
+	
 	log 6 '-echo "Calling run() with env: $(env)"'
 
 	# # Should this go in the handle_http() funtion?
@@ -566,21 +592,20 @@ process_request() {
 	log 5 "End process_request"
 } # Stdout returns to request handler, do not redirect.
 
-# Filters input for only single-quoted safely evalable var definitions,
-# then evals each of those lines.
+# Evaluates each legitimate line of env var declaration.
 # Expects input on stdin or $1.
 eval_input_env() {
 	log 5 'Evaling input env vars'
 	{
-		local inpt="$(evalable_env_from_input $1)"
+		local inpt=$(evalable_env_from_input "$1")
 		set -a
-		log 6 '-echo "Evalable-env-from-input: $inpt"'
+		log 6 '-echo "Evaling input env vars: $inpt"'
 		eval "$inpt"
 		set +a
 	} >&2
 }
 
-# Filters evalable env code from stdin (var='anything-but-literal-single-quote').
+# Filters evalable shell env var(s) from stdin (var_name='anything-but-literal-single-quote').
 # Does no modification of string.
 # Expects input string on stdin (or $1) to be output from 'env' or 'export -p'.
 # FIX: This breaks if any values contain an unescaped literal newline.
@@ -612,19 +637,30 @@ eval_haserl_env() {
 # Expects input on $1.
 # NOTE: Dont do this in a subshell from its caller, or it won't stick.
 #
-http_header_to_env_var() {
+http_headers_to_env_var() {
 	local inpt="$1"
-	log 6 '-echo "http_header_to_env_var receiving input: $inpt"'
+	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
 	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' | sed 's/HTTP__//')
 	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | \
-		awk -F': ' '
-			/^([[:alnum:]_-]+)(: )(.+)$/ {
-				gsub(/-/, "_", $1);
-				print "export HTTP_"toupper($1)"='\''"$2"'\''"
-			}
-		' | sed 's/HTTP__//'
+		# awk -F': ' -v http_headers="$HTTP_HEADERS" '
+		# 	/^([[:alnum:]_-]+)(: )(.+)$/ {   ### && match(http_headers, tolower($1))
+		# 		gsub(/-/, "_", $1);
+		# 		print "export HTTP_"toupper($1)"='\''"$2"'\''"
+		# 	}
+		# ' | sed 's/HTTP__//'
+		
+		awk -F': ' \
+		    -v http_headers="$HTTP_HEADERS" \
+		    -v http_prefix="$PREFIX_HTTP_HEADERS" \
+				' /^([[:alnum:]_-]+)(: )(.+)$/ {
+						gsub(/-/, "_", $1);
+						$1 = toupper($1);
+						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
+						print "export "$1"='\''"$2"'\''";
+					}
+				'
 	)
-	log 6 '-echo "Defining env var from http headers: $rslt"'
+	log 6 '-echo "Resulting env vars from http headers: $rslt"'
 	#eval "$rslt"
 	printf '%s' "$rslt"
 }
@@ -636,7 +672,7 @@ http_header_to_env_var() {
 #   Adds a quote at end of any line that doesn't end with '\'.
 # Taken from framework 'get_safe_fifo_input'
 # Can take data on $1 or stdin
-# NOTE: It's possible this may be obsolete.
+# NOTE: It's possible this may be obsolete. I don't think it's used any more.
 #
 sanitize_var_declaration() {
 	if [ -z "$1" ]; then cat; else echo "$1"; fi |
@@ -702,6 +738,17 @@ eval_to_var() {
 	rm -f "$fifo_in" "$fifo_out"
 	
 	log 6 '-echo "VAR $var_name (0..16): ${'"$var_name"':0:16}" | head -n1'
+}
+
+contains() {
+    string="$2"
+    substring="$1"
+    #if test "${string#*$substring}" != "$string"; then
+		if [ "${string/$substring/FALSE}" != "$string" ]; then
+        return 0    # $substring is in $string
+    else
+        return 1    # $substring is not in $string
+    fi
 }
 
 
@@ -804,6 +851,8 @@ initialize() {
 
 	# Sets up the haserl template file.
 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
+	
+	log 6 '-echo "Recognizing http-headers: $HTTP_HEADERS"'
 
 	#export -p >&2 # TEMP DEBUGGING
 	
