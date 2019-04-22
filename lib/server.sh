@@ -46,8 +46,8 @@ export PID_FILE="${PID_FILE:-/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:-$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:-$HF_DIRNAME/server.sh}"
 export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr,shut-null,null-eof}"
-export PREFIX_HTTP_HEADERS
-export HTTP_HEADERS="${HTTP_HEADERS:-$( tr '\n' ' ' <$HF_DIRNAME/http_headers.txt | awk '{gsub(/-/,"'_'"); print toupper($0)}' )}"
+export PREFIX_HTTP_STANDARD_HEADERS
+export HTTP_STANDARD_HEADERS="${HTTP_STANDARD_HEADERS:-$( tr '\n' ' ' <$HF_DIRNAME/http_headers.txt | awk '{gsub(/-/,"'_'"); print toupper($0)}' )}"
 # Still need to export this, even if default is null.
 # If using the CGI interface, you will need to set -t to something above default (0.5), try 1 or 2.
 export SOCAT_OPTS="${SOCAT_OPTS:--t2 -T60}"  
@@ -344,7 +344,7 @@ handle_http(){
 	log 5 "Begin handle_http with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
 	#inpt=$({
-		local line=''input_headers
+		local line=''
 		local len=0
 		local input_headers
 		local inpt=''
@@ -379,8 +379,6 @@ handle_http(){
 		export GATEWAY_INTERFACE='HTTP'
 		#inpt=$(http_headers_to_env_var "$input_headers")
 		local env_vars=$(http_headers_to_env_var "$input_headers")
-		# This is already logged in the above call to http_headers...
-		#log 6 '-echo "Env vars coded from http headers: $env_vars"'
 		eval_input_env "$env_vars"
 
 		# # NOTE: This does not work, since sed discards unused stdin!
@@ -483,7 +481,10 @@ handle_scgi() {
 		# Instead, we now do this:
 		# TODO: Split out awk stuff that prefixes http headers,
 		# into it's own function, so we can use it here.
-		eval_input_env "$scgi_headers"
+		#local prefixed_http_env_vars=$(prefix_http_env_vars "$scgi_headers")
+		#eval_input_env "$prefixed_http_env_vars"
+		local env_vars=$(http_headers_to_env_var "$scgi_headers")
+		eval_input_env "$env_vars"
 		
 		# All stdout from this grouping should go to log.
 	} >&2 #>/tmp/log_103  #>&103
@@ -628,6 +629,81 @@ evalable_env_from_input() {
 	sed -ne "/^\(export \)\?[[:alnum:]_ ]\+='/,/[^']*'$/p"
 }
 
+# Converts line(s) of http header to env var declaration format: export VAR_NAME='<data>'.
+# Expects input on $1.
+# NOTE: Don't do this in a subshell from its caller, or it won't stick.
+#
+# http_headers_to_env_var() {
+# 	local inpt="$1"
+# 	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
+# 	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' | sed 's/HTTP__//')
+# 	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | \
+# 		# awk -F': ' -v http_headers="$HTTP_STANDARD_HEADERS" '
+# 		# 	/^([[:alnum:]_-]+)(: )(.+)$/ {   ### && match(http_headers, tolower($1))
+# 		# 		gsub(/-/, "_", $1);
+# 		# 		print "export HTTP_"toupper($1)"='\''"$2"'\''"
+# 		# 	}
+# 		# ' | sed 's/HTTP__//'
+# 		
+# 		awk -F': ' \
+# 		    -v http_headers="$HTTP_STANDARD_HEADERS" \
+# 		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
+# 				' /^([[:alnum:]_-]+)(: )(.+)$/ {
+# 						gsub(/-/, "_", $1);
+# 						$1 = toupper($1);
+# 						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
+# 						print "export "$1"='\''"$2"'\''";
+# 					}
+# 				'
+# 	)
+# 	log 6 '-echo "Resulting env vars from http headers: $rslt"'
+# 	#eval "$rslt"
+# 	printf '%s' "$rslt"
+# }
+#
+# TODO: This universal header parser seems to work now with http & scgi, but I haven't tried handle_cgi() yet.
+# Also haven't tried the \r deletion yet.
+http_headers_to_env_var() {
+	local inpt="$1"
+	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
+	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | sed 's/^export *//' | tr -d "'" | \
+	local rslt=$( printf '%s' "$inpt" | sed -e 's/^export *//' -e "s/'//g" -e "s/\r//g" | \
+		\
+		awk -F'=|: *' \
+		    -v http_headers="$HTTP_STANDARD_HEADERS" \
+		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
+				\
+				' /^([[:alnum:]_-]+)(=|: *)(.+)$/ {
+						gsub(/-/, "_", $1);
+						$1 = toupper($1);
+						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
+						print "export "$1"='\''"$2"'\''";
+					}
+				'
+	)
+	log 6 '-echo "Resulting env vars from http headers: $rslt"'
+	#eval "$rslt"
+	printf '%s' "$rslt"
+}
+
+# # Experimental.
+# prefix_http_env_vars() {
+# 	local inpt="${1:-$(cat -)}"
+# 	log 6 '-echo "prefix_http_env_vars receiving input: $inpt"'
+# 	local rslt=$( printf '%s' "$inpt" | \
+# 		awk -F'=' \
+# 		    -v http_headers="$HTTP_STANDARD_HEADERS" \
+# 		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
+# 				' /^([[:alnum:]_]+)(=)(.+)$/ {
+# 						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
+# 						print $1"="$2;
+# 					}
+# 				'
+# 	)
+# 	log 6 '-echo "Resulting prefix_http_env_vars: $rslt"'
+# 	printf '%s' "$rslt"
+# }
+
 # Evals env returned from simple haserl call.
 # No input, expects and uses exising env vars.
 eval_haserl_env() {
@@ -640,38 +716,6 @@ eval_haserl_env() {
 		eval "$haserl_env"
 		set +a
 	} >&2
-}
-
-# Converts line(s) of http header to 'export VAR_NAME=<data>', and evals it.
-# Expects input on $1.
-# NOTE: Dont do this in a subshell from its caller, or it won't stick.
-#
-http_headers_to_env_var() {
-	local inpt="$1"
-	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
-	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' | sed 's/HTTP__//')
-	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | \
-		# awk -F': ' -v http_headers="$HTTP_HEADERS" '
-		# 	/^([[:alnum:]_-]+)(: )(.+)$/ {   ### && match(http_headers, tolower($1))
-		# 		gsub(/-/, "_", $1);
-		# 		print "export HTTP_"toupper($1)"='\''"$2"'\''"
-		# 	}
-		# ' | sed 's/HTTP__//'
-		
-		awk -F': ' \
-		    -v http_headers="$HTTP_HEADERS" \
-		    -v http_prefix="$PREFIX_HTTP_HEADERS" \
-				' /^([[:alnum:]_-]+)(: )(.+)$/ {
-						gsub(/-/, "_", $1);
-						$1 = toupper($1);
-						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
-						print "export "$1"='\''"$2"'\''";
-					}
-				'
-	)
-	log 6 '-echo "Resulting env vars from http headers: $rslt"'
-	#eval "$rslt"
-	printf '%s' "$rslt"
 }
 
 # Filters fifo-input env string, so it can be eval'd safely.
@@ -863,7 +907,7 @@ initialize() {
 	# Sets up the haserl template file.
 	printf '%s' "<% export -p %>" > "$HASERL_ENV"
 	
-	log 6 '-echo "Recognizing http-headers: $HTTP_HEADERS"'
+	log 6 '-echo "Recognizing http-headers: $HTTP_STANDARD_HEADERS"'
 
 	#export -p >&2 # TEMP DEBUGGING
 	
