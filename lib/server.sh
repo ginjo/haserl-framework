@@ -178,8 +178,8 @@ handle_socat_loop() {
 			log 5 '-echo "Killing socat system subshell (token $token)"'
 			# This kill is necessary, if the response doesn't trigger the client to release the connection.
 			# If you always have a content-length header, you shouldn't need this (I don't think).
-			# Hmmm... still seems to be necessary for the scgi interface. Not sure why.
-			if [ "$GATEWAY_INTERFACE" == 'SCGI' ]; then
+			# Hmmm... still seems to be necessary for the scgi (and maybe cgi?) interface. Not sure why.
+			if [ "$GATEWAY_INTERFACE" != 'HTTP' ]; then
 				kill -1 "${token}" >&2
 			fi
 			
