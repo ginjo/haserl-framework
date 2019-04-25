@@ -45,12 +45,13 @@ export HASERL_ENV="${HASERL_ENV:-/tmp/haserl_env}"
 export PID_FILE="${PID_FILE:-/tmp/hf_server.pid}"
 export HF_DIRNAME="${HF_DIRNAME:-$(dirname $0)}"
 export HF_SERVER="${HF_SERVER:-$HF_DIRNAME/server.sh}"
-export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr,shut-null,null-eof}"
+#export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr,shut-null,null-eof}"
+export SOCAT_ADDR="${SOCAT_ADDR:-tcp-l:1500,reuseaddr}"
 export PREFIX_HTTP_STANDARD_HEADERS
 export HTTP_STANDARD_HEADERS="${HTTP_STANDARD_HEADERS:-$( tr '\n' ' ' <$HF_DIRNAME/http_headers.txt | awk '{gsub(/-/,"'_'"); print toupper($0)}' )}"
-# Still need to export this, even if default is null.
+# Still need to export SOCAT_OPTS, even if default is null.
 # If using the CGI interface, you will need to set -t to something above default (0.5), try 1 or 2.
-export SOCAT_OPTS="${SOCAT_OPTS:--t2 -T60}"  
+export SOCAT_OPTS="${SOCAT_OPTS:--T60}"  
 
 # Loads logging.
 . "$HF_DIRNAME/logging.sh"
@@ -135,110 +136,7 @@ socat_server(){
 	} >&103 2>&22  # Othwerwise, socat spits out too much data.
 }
 
-# Handles raw requests thru fifo IO.
-# TODO: This is deprecated and should be removed.
-request_loop() {
-	# NOTE: To properly read chrs or lines from a fifo, you should perform all reading
-	# within a subshell with input redirected from fifo. That way, the fifo won't close until you're done.
-	# Or open the fifo for reading manually with a FD, then close it after you're done.
-	#
-	# This example reads line-by-line, stops at first empty line, then reads the rest.
-	#   ( while :; do IFS= read -r line; echo "$line"; [ "$line" == '' ] && break; done; cat - ) <fifo
-	#
-	# I think you can do the same for single chrs too, like this:
-	#   ( while :; do IFS= read -rn1 chr; echo "$chr"; [ "$lst$chr" == '' ] && break; lst="$chr"; done; cat - ) <fifo
-	#
-	# Here's the fifo input for the above two examples:
-	#   while :; do printf '%s\n%s\n%s\n\n%s\n' first second third fourth >fifo; echo "done"; sleep 1; done
-	#
-	# Try the above examples with socat writing to the fifo. Does it work the same? Do null-bytes have any effect?
-	# Yes, using this: socat tcp-l:1500,reuseaddr,fork - >fifo.
-	# Then pass the same test string above through another socat to localhost:1500.
-	#
-	# Remember that 'read' is useless with null bytes, since they can't be stored in a var.
-	# To properly handle null bytes from input, you would need to use dd, tr, sed, or some combo of those,
-	# depending on what you want to do with the null bytes.
-	# 
-	# For fifo behavior, read: https://stackoverflow.com/questions/33773710/why-read-n-from-fifo-file-will-lost-data-in-shell.
-	#
-	exec 0<"$FIFO_INPUT"
-	log 4 '-echo "Starting request loop listener ($(get_pids))"'
-
-	while [ $? -eq 0 ]; do
-		log 5 "Begin request loop"
-		
-		# Manually opens stdout to fifo. I think must be open before subshell runs.
-		# Using this, instead of redirecing the subshell output, blocks something that
-		# prevents the output from getting to the client (although the output is sent back to the nginx server)
-		#exec 1>"$FIFO_OUTPUT"
-		
-		( # This is where the request is currently subshelled, to protect the main server env.
-		  # It may not be necessary to subshell, however, since the entire script-run may be
-		  # in a subshell, if it's running as the last part of a pipe. Check all your pipes.
-			# NOTE: This subshelling appears to be really IMPORTANT for redirected requests to work,
-			# when using the forking socat with STDIO. Also see the socat options necessary,
-			# like short '-t' and shut-null on addr1
-			
-			# Provides gating so upstream processes aren't started unnecessarily.
-			# TODO: Try moving this outside the subshell again, and open stdout at beginning of 'while'
-			# Then see if you can background the subshell.
-			log 5 '-echo "Waiting for request on $FIFO_INPUT"'
-			IFS= read -rn1 chr
-			if [ "${chr/[^a-zA-Z1-9_]/DROP}" == 'DROP' ]; then
-				log 3 "Unexpected character ($chr) received at beginning of request loop ($(get_pids))"
-				continue
-			fi
-			log 5 '-echo "Read $chr from $FIFO_INPUT, sending control to handle_request"'
-			
-			handle_request "$chr" #>"$FIFO_OUTPUT"
-			# Not clear if this EOF helps or not.
-			printf '\0' #>"$FIFO_OUTPUT"
-					
-			# Manually closes stdout to fifo.
-			#exec 1>&-
-
-		) >"$FIFO_OUTPUT"
-		
-		log 5 "End request loop"
-		#exec 1>&-
-	done
-	log 2 '-echo "Leaving request loop listener ($(get_pids)) exit code ($?)"'
-	
-	# Just to be safe, cleanup if the loop breaks or ends.
-	exec 1>&-
-	exec 0<&-
-}
-
-
-# # With fifo IO.
-# # TODO: I think this is obsolete and should be removed.
-# handle_socat_loop() {
-# 	while :; do
-# 		log 5 "Listening for input from socat loop ($(get_pids))"
-# 		IFS= read -r id </root/haserl_framework_app/fifo
-# 		#if [ ! -p /tmp/hf_${id}_in -o ! -p /tmp/hf_${id}_out ]; then
-# 		if [ ! -p /tmp/hf_${id}_out ]; then
-# 			log 3 "Waiting for fifo file (/tmp/hf_${id}_out) ($(get_pids))"
-# 			sleep 1
-# 			continue
-# 		fi
-# 		log 5 "Handle_socat_loop receiving request for fifo ($id) ($(get_pids))"
-# 
-# 		(
-# 			#exec 0</tmp/hf_${id}_in
-# 			exec 0</proc/$id/fd/0
-# 			exec 1>/tmp/hf_${id}_out
-# 			handle_request
-# 			printf '\n\0'
-# 			log 5 "After handle_request before closing IO"
-# 			exec 0<&-
-# 			exec 1>&-
-# 			rm -f /tmp/hf_${id}_*
-# 		) &  #</proc/$id/fd/0 >/tmp/hf_${id}_out &
-# 	done
-# }
-
-# Taps into socat fifo IO.
+# Handles request-to-application IO by tapping into socat fifo IO directly.
 handle_socat_loop() {
 	local display_pids="$(get_pids)"
 	log 4 '-echo "Listening for input from socat ($display_pids)"'
@@ -271,6 +169,7 @@ handle_socat_loop() {
 			
 			log 5 "Handle_socat_loop cleannig after handle_request for token ($token)"
 			# Close stdin/out
+			# TODO: Are these breaking CGI when socat -t is too small? (something is, but I can't find it).
 			exec 0<&-
 			exec 1>&-
 			
@@ -280,7 +179,12 @@ handle_socat_loop() {
 			# This kill is necessary, if the response doesn't trigger the client to release the connection.
 			# If you always have a content-length header, you shouldn't need this (I don't think).
 			# Hmmm... still seems to be necessary for the scgi interface. Not sure why.
-			kill -1 "${token}" >&2
+			if [ "$GATEWAY_INTERFACE" == 'SCGI' ]; then
+				kill -1 "${token}" >&2
+			fi
+			
+			# Pretty sure thas to be backgrounded here, but I don't remember why.
+			# Might have something to do with the token-named fifo files & IO.
 		) &
 	done
 }
@@ -325,12 +229,6 @@ handle_request() {
 		
 		# If you made it this far, you've completed a request.
 		break
-		
-		# This doesn't help multiple requests (on same connection),
-		# since it eventually hangs on reading fifo with nothing to offer.
-		# log 5 'Resetting handle_request and waiting for another (only with keep-alive)'
-		# line=
-		# chr=
 	done
 	log 5 "End handle_request"
 	
@@ -343,83 +241,46 @@ handle_request() {
 handle_http(){
 	log 5 "Begin handle_http with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
-	#inpt=$({
-		local line=''
-		local len=0
-		local input_headers
-		local inpt=''
-		IFS= read -r line
-		local first_line="$1$line"
-		
-		log 6 "FIRST-LINE: $first_line"
-		# I don't think we want to print the first-line of http input.
-		#printf '%s\n' "$first_line"
 
-		# This should probably be a custom env var like HTTP_REQUEST,
-		# then parse that in its own function, or in the framework, or in process_request()
-		export REQUEST_URI=$(echo "$first_line" | sed 's/^[[:alpha:]]\+ \([^ ]\+\) .*$/\1/')
-		# TODO: Move this line further up the chain (closer to the framework).
-		#export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$}"
-		export REQUEST_METHOD=$(echo "$first_line" | sed 's/^\([[:alpha:]]\+\) [^ ]\+ .*$/\1/')
-		log 5 "Reading raw http headers from stdin."
-
-		# TODO: Since disabling the following steps that set $len, request bodies are broken.
-		#
-		while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
-			IFS= read -r line
-			# I think this is now handled in http_headers_to_env_var.
-			#[ -z "${line/Content-Length:*/}" ] && len="${line/Content-Length: /}"
-			# We don't want to print http headers here, but we do want to translate them into env vars.
-			#printf '%s\n' "$line"
-			#http_headers_to_env_var "$line
-			#inpt="$inpt"$(http_headers_to_env_var "$line")$'\n'''
-			input_headers="$input_headers""$line"$'\n'
-		done
-		
-		export GATEWAY_INTERFACE='HTTP'
-		#inpt=$(http_headers_to_env_var "$input_headers")
-		local env_vars=$(http_headers_to_env_var "$input_headers")
-		eval_input_env "$env_vars"
-
-		# # NOTE: This does not work, since sed discards unused stdin!
-		# local header_inpt="$(sed '/^\r*$/q')$'\n'"
-		# log 6 '-echo "Received http headers on stdin: $header_inpt"'
-		# local inpt=$(http_headers_to_env_var "$header_inpt")
-		
-		# Moved, see above.
-		#export GATEWAY_INTERFACE='HTTP'
-		
-		# # TODO: I think this can be moved upstream to process_request() function,
-		# # where it can be used for all 3 input interfaces instead of just this one.
-		# export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$HTTP_SCRIPT_NAME}}"
-		
-		# TODO: This is used to extract body content from input, when it exists,
-		# but this is broken since $len is no longer calculated as it was above.
-		# This was used when request-body was captured before sending to process_request().
-		# Now (experimental) request-body waiting on stdin is left as-is for process_request().
-		#
-		# if [ $(($len)) -gt 0 ]; then
-		# 	log 6 '-echo "Calling head on stdin with -c $len"'
-		# 	head -c $(($len))
-		# fi
-		#
-		# or
-		#
-		# if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
-		# 	log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
-		# 	head -c $(($HTTP_CONTENT_LENGTH))
-		# fi
-
-		#export -p
-		
-		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
-		# otherwise the response gets back to the client before
-		# the data can be processed, and the client disconnects.
-	#}) #| process_request
+	export GATEWAY_INTERFACE='HTTP'
 	
-	log 5 'Calling process_request with http input'
-	log 6 '-echo "Http input sent to process_request: $inpt"'
-	#echo "$inpt" | process_request
+	IFS= read -r line
+	local first_line="$1$line"
+	log 6 "FIRST-LINE: $first_line"
+
+	# This should probably be a custom env var like HTTP_REQUEST,
+	# then parse that in its own function, or in the framework, or in process_request()
+	export REQUEST_URI=$(echo "$first_line" | sed 's/^[[:alpha:]]\+ \([^ ]\+\) .*$/\1/')
+	# TODO: Move this line further up the chain (closer to the framework).
+	#export PATH_INFO="${PATH_INFO:-${REQUEST_URI#$}"
+	export REQUEST_METHOD=$(echo "$first_line" | sed 's/^\([[:alpha:]]\+\) [^ ]\+ .*$/\1/')
+	#log 5 "Reading raw http headers from stdin."
+
+	# while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
+	# 	IFS= read -r line
+	# 	input_headers="$input_headers""$line"$'\n'
+	# done
+	local input_headers=$(read_headers)
+	
+	local env_vars=$(http_headers_to_env_var "$input_headers")
+	eval_input_env "$env_vars"
+	
+	# TODO: This extracts body from stdin and needs to be moved to process_request().
+	#
+	# if [ $(($len)) -gt 0 ]; then
+	# 	log 6 '-echo "Calling head on stdin with -c $len"'
+	# 	head -c $(($len))
+	# fi
+	#
+	# or
+	#
+	# if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
+	# 	log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
+	# 	head -c $(($HTTP_CONTENT_LENGTH))
+	# fi
+	
+	log 5 'Calling process_request from handle_http()'
+	#log 6 '-echo "Http input sent to process_request: $inpt"'
 	process_request
 	
 	log 5 "End handle_http"
@@ -431,107 +292,78 @@ handle_http(){
 handle_scgi() {
 	log 5 "Begin handle_scgi with '$1' ($(get_pids))"
 	#log 6 '-ls -la /proc/$$/fd'
-	{
-		# Arg $1 contains the total length of headers.
-		# Gets all but the last character of $1 (last chr is a ':', which we don't want).
-		local len="${1:0:$((${#1}-1))}"
-		
-		log 5 "Reading $len characters of scgi input"
 	
-		# Reads header length, reads headers, translates into env var code.
-		# Must not use a variable to store scgi headers before translating null-byte,
-		# since null-bytes can't be stored in variables.
-		local scgi_headers=$(
-			dd count=$(($len)) bs=1 2>&106 |
-			tr '\0' '\n' |
-			sed '$!N;'"s/\n/='/;s/$/'/"
-			printf '\n'
-		)
-		
-		export GATEWAY_INTERFACE='SCGI'
-		
-		# Drops the last 1 chrs from stdin (I think they were ',')
-		# TODO: Is the request body being damaged by this? YES!
-		# TODO: Find a less hacky place/way to do this.
-		#dd count=1 bs=2 >/dev/null 2>&106
-		# There is still a comma being left over. Try dropping it.
-		# This works, but...
-		# TODO: Make sure this works with POST containing body text.
-		#local dropped_chr=$(dd count=1 bs=1 2>/dev/null)
-		IRS= read -rn1 dropped_chr
-		log 6 '-echo "Dropped ($dropped_chr) from end of scgi input"'
-		
-		log 6 '-echo "Parsed SCGI headers $scgi_headers"'
-		
-		### These are not used in the new scheme where headers are evald here, and body evaled in process_request().
-		# #
-		# # Extracts CONTENT_LENGTH value from scgi_headers and evals it into a var.
-		# local scgi_content_length_header=$(echo "$scgi_headers" | grep '^CONTENT_LENGTH')
-		# log 6 '-echo "Scgi body content length declaration $scgi_content_length_header"'
-		# eval "$scgi_content_length_header"
-		# 	
-		# # Gets remaining stdin containing request body, if exists.
-		# # We use dd here cuz we might want to skip one or more bytes.
-		# if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
-		# 	log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
-		# 	export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
-		# 	#echo "Request body: $REQUEST_BODY"
-		# fi
-		
-		# Instead, we now do this:
-		# TODO: Split out awk stuff that prefixes http headers,
-		# into it's own function, so we can use it here.
-		#local prefixed_http_env_vars=$(prefix_http_env_vars "$scgi_headers")
-		#eval_input_env "$prefixed_http_env_vars"
-		local env_vars=$(http_headers_to_env_var "$scgi_headers")
-		eval_input_env "$env_vars"
-		
-		# All stdout from this grouping should go to log.
-	} >&2 #>/tmp/log_103  #>&103
+	export GATEWAY_INTERFACE='SCGI'
 	
-	# # Outputs scgi env and local env to process_request.
-	# log 5 "Printing scgi_headers to process_request"
-	# {
-	# 	printf '%s\n' "$scgi_headers"
-	# 	# I don't think we need to export env vars.
-	# 	#export -p
-	# } | process_request
+	# Arg $1 contains the total length of headers.
+	# Gets all but the last character of $1 (last chr is a ':', which we don't want).
+	local len="${1:0:$((${#1}-1))}"
+	
+	log 5 "Reading $len characters of scgi input"
+
+	# Reads header length, reads headers, translates into env var code.
+	# Must not use a variable to store scgi headers before translating null-byte,
+	# since null-bytes can't be stored in variables.
+	local scgi_headers=$(
+		dd count=$(($len)) bs=1 2>&106 |
+		tr '\0' '\n' |
+		sed '$!N;'"s/\n/='/;s/$/'/"
+		printf '\n'
+	)
+	log 6 '-echo "Parsed SCGI headers $scgi_headers"'
+	
+	# Drops the last 1 chrs from stdin (I think they were ',')
+	IRS= read -rn1 dropped_chr
+	log 6 '-echo "Dropped ($dropped_chr) from end of scgi input"'
+	
+	# # TODO: This functionality needs to be recreated in process_request().
+	# #
+	# # Gets remaining stdin containing request body, if exists.
+	# # We use dd here cuz we might want to skip one or more bytes.
+	# if [ $(($CONTENT_LENGTH)) -gt 0 ]; then
+	# 	log 5 '-echo "Reading $CONTENT_LENGTH more chars as request body"'
+	# 	export REQUEST_BODY=$(dd count=$(($CONTENT_LENGTH)) bs=1 skip=0 2>&106)
+	# 	#echo "Request body: $REQUEST_BODY"
+	# fi
+
+	local env_vars=$(http_headers_to_env_var "$scgi_headers")
+	eval_input_env "$env_vars"
+
+	log 5 'Calling process_request from handle_scgi()'
 	process_request
 	
 	log 5 "End handle_scgi"
 } # Stdout goes back to socat server. Do not redirect.
 
 # This accepts and handles cgi input containing env vars.
+# Any pre-read data is available on $1.
 handle_cgi(){
 	log 5 "Begin handle_cgi with '$1' ($(get_pids))"
 	# All stdout in this block gets sent to process_request()
-	inpt=$({
-
-		printf '%s' "$1"
-
-
-		log 5 "Reading cgi input (env vars) from stdin."
-		# FIX: This doesn't ever return now.
-		#cat #| tee /tmp/log_106
-		
-		# This is necessary, because otherwise reading from stdin hangs.
-		# This happens when pushing env vars from a cgi script to this app
-		# using nc, socat, or directlly via fifo.
-		# If receiving these cgi/haserl requests over the socat interface,
-		# you may also need to adjust -t and -T on that interface using $SOCAT_OPTS.
-		socat -u -T0.2 - -
-		
-		#export -p
-		
-		# NOTE: The pipe chain is stopped and restarted here (and above, see 'inpt'),
-		# otherwise the response gets back to the client before
-		# the data can be processed, and the client disconnects.
-	}) #| process_request
 	
 	export GATEWAY_INTERFACE='CGI'
+	
+	# The use of socat here is necessary, because otherwise reading from stdin hangs.
+	# This happens when pushing env vars from a cgi script to this app
+	# using nc, socat, or directlly via fifo.
+	# If receiving these cgi/haserl requests over the socat interface,
+	# you may also need to adjust -t and -T on that interface using $SOCAT_OPTS.
+	log 5 "Reading CGI input (env vars) from stdin."
+	# TODO: Instead of socat here, create a generic function read_headers() to get all stdin up to a blank line.
+	# That function will also be used for the handle_http() interface.
+	#local cgi_headers="$1$(socat -u -T0.2 - -)"
+	local cgi_headers="$1$(read_headers)"
+	
+	log 6 '-echo "Read CGI input (env vars) from stdin: $cgi_headers"'
 
-	log 5 'Calling process_request with cgi input'
-	echo "$inpt" | process_request
+	local env_vars=$(http_headers_to_env_var "$cgi_headers")
+	eval_input_env "$env_vars"
+
+	log 5 'Calling process_request from handle_cgi()'
+	process_request
+	
+	# This doesn't help the lingering connection.
+	#printf '\0'
 	
 	log 5 "End handle_cgi"
 } # Stdout goes back to socat server. Do not redirect.
@@ -564,7 +396,7 @@ process_request() {
 	eval_haserl_env
 	
 	
-	log 6 '-echo "Calling run() with env: $(env)"'
+	log 6 '-echo "Calling run() with env: $(env | sort)"'
 
 	# # Should this go in the handle_http() funtion?
 	# # Or in the framework run() function?
@@ -602,6 +434,21 @@ process_request() {
 	log 5 "End process_request"
 } # Stdout returns to request handler, do not redirect.
 
+# Reads stdin until first empty line.
+# Picks up first line from $line, if defined.
+# Returns result to stdout.
+read_headers() {
+	local line="${line:-''}"
+	log 5 'Reading headers from stdin'
+	log 6 '-echo "Reading headers from stdin with first line: $line"'
+	while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
+		IFS= read -r line
+		local input_headers="$input_headers""$line"$'\n'
+	done
+	log 6 '-echo "read_headers() ingested: $input_headers"'
+	printf '%s' "$input_headers"
+}
+
 # Evaluates each legitimate line of env var declaration.
 # Expects input on stdin or $1.
 eval_input_env() {
@@ -633,22 +480,19 @@ evalable_env_from_input() {
 # Expects input on $1.
 # NOTE: Don't do this in a subshell from its caller, or it won't stick.
 #
+# TODO: This universal header parser seems to work now with http & scgi, but I haven't tried handle_cgi() yet.
+# Also haven't tried the \r deletion yet.
 # http_headers_to_env_var() {
 # 	local inpt="$1"
 # 	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
-# 	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | awk -F': ' '/^([[:alnum:]_-]+)(: )(.+)$/ {gsub(/-/, "_", $1); print "export HTTP_"toupper($1)"='\''"$2"'\''"}' | sed 's/HTTP__//')
-# 	local rslt=$( printf '%s' "$inpt" | tr -d '\r' | \
-# 		# awk -F': ' -v http_headers="$HTTP_STANDARD_HEADERS" '
-# 		# 	/^([[:alnum:]_-]+)(: )(.+)$/ {   ### && match(http_headers, tolower($1))
-# 		# 		gsub(/-/, "_", $1);
-# 		# 		print "export HTTP_"toupper($1)"='\''"$2"'\''"
-# 		# 	}
-# 		# ' | sed 's/HTTP__//'
-# 		
-# 		awk -F': ' \
+# 	#local rslt=$( printf '%s' "$inpt" | tr -d '\r' | sed 's/^export *//' | tr -d "'" | \
+# 	local rslt=$( printf '%s' "$inpt" | sed -e 's/^export *//' -e "s/'//g" -e "s/\r//g" | \
+# 		\
+# 		awk -F'=|: *' \
 # 		    -v http_headers="$HTTP_STANDARD_HEADERS" \
 # 		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
-# 				' /^([[:alnum:]_-]+)(: )(.+)$/ {
+# 				\
+# 				' /^([[:alnum:]_-]+)(=|: *)(.+)$/ {
 # 						gsub(/-/, "_", $1);
 # 						$1 = toupper($1);
 # 						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
@@ -661,8 +505,10 @@ evalable_env_from_input() {
 # 	printf '%s' "$rslt"
 # }
 #
-# TODO: This universal header parser seems to work now with http & scgi, but I haven't tried handle_cgi() yet.
-# Also haven't tried the \r deletion yet.
+#
+# # With awk multiple command blocks.
+# 
+# # See https://stackoverflow.com/questions/19154996/awk-split-only-by-first-occurrence
 http_headers_to_env_var() {
 	local inpt="$1"
 	log 6 '-echo "http_headers_to_env_var receiving input: $inpt"'
@@ -672,12 +518,22 @@ http_headers_to_env_var() {
 		awk -F'=|: *' \
 		    -v http_headers="$HTTP_STANDARD_HEADERS" \
 		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
-				\
-				' /^([[:alnum:]_-]+)(=|: *)(.+)$/ {
+				'
+					/^[[:alnum:]_\-]+=.+$/ {
+						sep = index($0, "=");
+						val = substr($0,sep+1)
+					}
+				
+					/^[[:alnum:]_\-]+:.+$/ {
+						val_start = match($0, /: */) + RLENGTH;
+						val = substr($0, val_start);
+					}
+				
+					{
 						gsub(/-/, "_", $1);
 						$1 = toupper($1);
 						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
-						print "export "$1"='\''"$2"'\''";
+						print "export "$1"='\''"val"'\''";
 					}
 				'
 	)
@@ -685,24 +541,6 @@ http_headers_to_env_var() {
 	#eval "$rslt"
 	printf '%s' "$rslt"
 }
-
-# # Experimental.
-# prefix_http_env_vars() {
-# 	local inpt="${1:-$(cat -)}"
-# 	log 6 '-echo "prefix_http_env_vars receiving input: $inpt"'
-# 	local rslt=$( printf '%s' "$inpt" | \
-# 		awk -F'=' \
-# 		    -v http_headers="$HTTP_STANDARD_HEADERS" \
-# 		    -v http_prefix="$PREFIX_HTTP_STANDARD_HEADERS" \
-# 				' /^([[:alnum:]_]+)(=)(.+)$/ {
-# 						if (http_prefix && match(http_headers, " "$1" ")) $1 = http_prefix"_"$1;
-# 						print $1"="$2;
-# 					}
-# 				'
-# 	)
-# 	log 6 '-echo "Resulting prefix_http_env_vars: $rslt"'
-# 	printf '%s' "$rslt"
-# }
 
 # Evals env returned from simple haserl call.
 # No input, expects and uses exising env vars.
@@ -726,6 +564,7 @@ eval_haserl_env() {
 # Taken from framework 'get_safe_fifo_input'
 # Can take data on $1 or stdin
 # NOTE: It's possible this may be obsolete. I don't think it's used any more.
+# Before deleting this, make sure code-injection attacks are thwarted!
 #
 sanitize_var_declaration() {
 	if [ -z "$1" ]; then cat; else echo "$1"; fi |
@@ -805,8 +644,6 @@ contains() {
         return 1    # $substring is not in $string
     fi
 }
-
-
 
 # Prints pids (current, parent, subshell). Show header row if $1 == true.
 get_pids() {
