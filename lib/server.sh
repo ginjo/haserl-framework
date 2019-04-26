@@ -164,9 +164,6 @@ handle_socat_loop() {
       exec 1>/proc/${token}/fd/1
       handle_request #</proc/${token}/fd/0 >/proc/${token}/fd/1
       
-      # Is this null byte necessary?
-      #printf '\0'
-      
       log 5 "Handle_socat_loop cleannig after handle_request for token ($token)"
       # Close stdin/out
       # TODO: Are these breaking CGI when socat -t is too small? (something is, but I can't find it).
@@ -256,28 +253,9 @@ handle_http(){
   export REQUEST_METHOD=$(echo "$first_line" | sed 's/^\([[:alpha:]]\+\) [^ ]\+ .*$/\1/')
   #log 5 "Reading raw http headers from stdin."
 
-  # while [ ! -z "$line" -a "$line" != $'\r' -a "$line" != $'\n' -a "$line" != $'\r\n' ]; do
-  #   IFS= read -r line
-  #   input_headers="$input_headers""$line"$'\n'
-  # done
   local input_headers=$(read_headers)
-  
   local env_vars=$(http_headers_to_env_var "$input_headers")
   eval_input_env "$env_vars"
-  
-  # TODO: This extracts body from stdin and needs to be moved to process_request().
-  #
-  # if [ $(($len)) -gt 0 ]; then
-  #   log 6 '-echo "Calling head on stdin with -c $len"'
-  #   head -c $(($len))
-  # fi
-  #
-  # or
-  #
-  # if [ $(($HTTP_CONTENT_LENGTH)) -gt 0 ]; then
-  #   log 6 '-echo "Calling head on stdin with -c $HTTP_CONTENT_LENGTH"'
-  #   head -c $(($HTTP_CONTENT_LENGTH))
-  # fi
   
   log 5 'Calling process_request from handle_http()'
   #log 6 '-echo "Http input sent to process_request: $inpt"'
@@ -327,6 +305,12 @@ handle_scgi() {
 
 # This accepts and handles cgi input containing env vars.
 # Any pre-read data is available on $1.
+# Use the following in your .cgi script:
+#
+# #!/bin/sh
+# local env_vars="$(export -p)"
+# { printf '%s\n\n%s\n' "$env_vars" "$(cat)"; sleep 1; } | tee /tmp/cgi-export | socat -t10 tcp:localhost:1500 -
+#
 handle_cgi(){
   log 5 "Begin handle_cgi with '$1' ($(get_pids))"
   # All stdout in this block gets sent to process_request()
@@ -398,17 +382,8 @@ process_request() {
   
   eval_haserl_env
   
-  
   log 6 '-echo "Calling run() with env: $(env | sort)"'
 
-  # # Should this go in the handle_http() funtion?
-  # # Or in the framework run() function?
-  # if echo "$GATEWAY_INTERFACE" | grep -qv '^CGI' && [ ! "$SCGI" == '1' ]; then
-  #   printf '%s\n' "HTTP/1.1 ${status:-200 OK}"
-  # fi
-  
-  #headers
-  #run
   {
     eval_to_var run_result run
     # I removed the final null-byte and added +1 here, but it doesn't always match the actual body content length.
@@ -418,19 +393,13 @@ process_request() {
     content_length "$((${#run_result} + 1))"
     headers
     log 6 "Run_result: $run_result"
+    # The final newline in '%s\n' is necessary to match the declared content_length, in some situations.
     [ ! "$REQUEST_METHOD" == "HEAD" -a -z "$redirected" ] && printf '%s\n' "$run_result"
   }
   
-  # # TODO: Dunno if this is the right place for this.
-  # # FIX:  The $(cmd-subst) creates a subshell around the entire run() function,
-  # #       making any env vars created or modified by run() invisible at this point.
-  # run | $(body=)
-  # local body_length="$((${#body}))"
-  # headers "$body_length"
-  # printf '%s' "$body"
-  
   # This final output is only appropriate when a body is returned,
   # but it is wrong for any reponses that are not supposed to have bodies (304, 307, etc..).
+  # I'm disabling this, cuz it may be cluttering the response.
   #printf '\r\n\0'
   
   log 3 "${REQUEST_METHOD:-REQUEST_METHOD N/A} ${PATH_INFO:-PATH_INFO N/A} $STATUS"
